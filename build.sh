@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds Notes Float.app (universal, macOS 26+), runs the self-test, then installs to /Applications and relaunches.
+# Builds NotesFloat.app (universal, macOS 26+), runs the self-test, then installs to /Applications and relaunches.
 #   ./build.sh               build + install + relaunch (local development)
 #   ./build.sh --no-install  build + self-test only
 #   ./build.sh --package     build + self-test + dist/ zip and dmg (used by the release workflow)
@@ -23,8 +23,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>me.raoufs.alhassan.NotesFloat</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundleName</key><string>Notes Float</string>
-  <key>CFBundleDisplayName</key><string>Notes Float</string>
+  <key>CFBundleName</key><string>NotesFloat</string>
+  <key>CFBundleDisplayName</key><string>NotesFloat</string>
   <key>CFBundleExecutable</key><string>NotesFloat</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
@@ -32,9 +32,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>$MIN_MACOS</string>
   <key>LSUIElement</key><true/>
   <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Al-Hassan Abdel-Raouf. Apache License 2.0.</string>
-  <key>NSAppleEventsUsageDescription</key><string>Notes Float reads and edits your notes in Apple Notes.</string>
+  <key>NSAppleEventsUsageDescription</key><string>NotesFloat reads and edits your notes in Apple Notes.</string>
   <key>CFBundleURLTypes</key><array><dict>
-    <key>CFBundleURLName</key><string>Notes Float link</string>
+    <key>CFBundleURLName</key><string>NotesFloat link</string>
     <key>CFBundleURLSchemes</key><array><string>notesfloat</string></array>
   </dict></array>
 </dict></plist>
@@ -46,7 +46,7 @@ if [ "$1" = "--package" ]; then
   rm -rf dist; mkdir -p dist/dmg
   ditto -c -k --keepParent "$APP" "dist/NotesFloat-$VERSION.zip"
   cp -R "$APP" dist/dmg/ && ln -s /Applications dist/dmg/Applications
-  hdiutil create -quiet -volname "Notes Float" -srcfolder dist/dmg -ov -format UDZO "dist/NotesFloat-$VERSION.dmg"
+  hdiutil create -quiet -volname "NotesFloat" -srcfolder dist/dmg -ov -format UDZO "dist/NotesFloat-$VERSION.dmg"
   rm -rf dist/dmg
   (cd dist && shasum -a 256 NotesFloat-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
   exit 0

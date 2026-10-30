@@ -419,7 +419,7 @@ final class Settings: NSObject {
 
     override init() {
         super.init()
-        window.title = "Notes Float Settings"
+        window.title = "NotesFloat Settings"
         window.isReleasedWhenClosed = false
         window.level = .floating
         rec.bezelStyle = .rounded

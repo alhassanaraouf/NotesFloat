@@ -86,7 +86,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
              Cmd(title: "Zoom In", icon: "plus.magnifyingglass", key: "⌘=") { self.zoom(1) },
              Cmd(title: "Zoom Out", icon: "minus.magnifyingglass", key: "⌘-") { self.zoom(-1) }]),
             ("App", [Cmd(title: "Settings", icon: "gearshape", key: "⌘,") { self.settings.show() },
-                     Cmd(title: "Quit Notes Float", icon: "power", key: "⌘q") { NSApp.terminate(nil) }]),
+                     Cmd(title: "Quit NotesFloat", icon: "power", key: "⌘q") { NSApp.terminate(nil) }]),
             ("Trash", [Cmd(title: "Show Recently Deleted Notes", icon: "trash", key: "") { self.deletedMenu() },
                        Cmd(title: "Delete Note", icon: "trash", key: "⌃x", destructive: true, enabled: cur != nil) { self.deleteNote() }]),
         ]
@@ -316,12 +316,12 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         popupView.addSubview(card)
         for v in [scrim, popupView] { v.isHidden = true; root.addSubview(v) }
 
-        status.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "Notes Float")
+        status.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "NotesFloat")
         let menu = NSMenu()
-        menu.addItem(withTitle: "Show Notes Float", action: #selector(showFromMenu), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Show NotesFloat", action: #selector(showFromMenu), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: "").target = self
         menu.addItem(.separator())
-        menu.addItem(withTitle: "Quit Notes Float", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: "Quit NotesFloat", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         status.menu = menu
 
         HotKey.register()
@@ -385,7 +385,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     func present(_ items: [Item], placeholder: String, rowHeight: CGFloat = 34, kind: String = "", onEmpty: ((String) -> Void)? = nil) {
         popupKind = kind
         browseToken = nil
-        switcher.open(items, placeholder: placeholder, context: cur == nil ? "Notes Float" : name,
+        switcher.open(items, placeholder: placeholder, context: cur == nil ? "NotesFloat" : name,
                       rowHeight: rowHeight, onEmpty: onEmpty)  // calls placePopup via onResize
         if !popupOpen {
             scrim.isHidden = false
@@ -521,7 +521,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         if newNote(announce: false) { return }
         cur = nil
         text.textStorage!.setAttributedString(NSAttributedString(
-            string: "Can't reach Apple Notes.\nAllow Notes Float in System Settings › Privacy & Security › Automation, then reopen.",
+            string: "Can't reach Apple Notes.\nAllow NotesFloat in System Settings › Privacy & Security › Automation, then reopen.",
             attributes: [.font: body, .foregroundColor: NSColor.textColor]))
         applyMode()
     }
@@ -649,7 +649,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func applyMode() {
         text.isEditable = !readOnly
-        panel.title = cur == nil ? "Notes Float" : name
+        panel.title = cur == nil ? "NotesFloat" : name
         titleLabel.stringValue = panel.title
         updateFooter()
     }

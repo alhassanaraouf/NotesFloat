@@ -1,4 +1,4 @@
-// Renders the Notes Float app icon and builds AppIcon.icns.  Run: swift Artwork/make-icon.swift
+// Renders the NotesFloat app icon and builds AppIcon.icns.  Run: swift Artwork/make-icon.swift
 // Design: an Apple Notes–style page (white, yellow header, ruled lines) tilted and lifted off a warm yellow
 // tile, with a soft ground shadow below the gap so it reads as floating. Same 1024 grid as macOS icons:
 // 824pt rounded tile inset 100pt, corner radius 185.
@@ -73,11 +73,11 @@ for pt in [16, 32, 128, 256, 512] {
     try png(pt).write(to: set.appendingPathComponent("icon_\(pt)x\(pt).png"))
     try png(pt * 2).write(to: set.appendingPathComponent("icon_\(pt)x\(pt)@2x.png"))
 }
-try png(1024).write(to: dir.appendingPathComponent("notes-float-icon.png"))
+try png(1024).write(to: dir.appendingPathComponent("NotesFloat-icon.png"))
 let p = Process()
 p.executableURL = URL(fileURLWithPath: "/usr/bin/iconutil")
 p.arguments = ["-c", "icns", set.path, "-o", dir.appendingPathComponent("AppIcon.icns").path]
 try p.run()
 p.waitUntilExit()
 try FileManager.default.removeItem(at: set)
-print(p.terminationStatus == 0 ? "Artwork/AppIcon.icns + notes-float-icon.png" : "iconutil failed")
+print(p.terminationStatus == 0 ? "Artwork/AppIcon.icns + NotesFloat-icon.png" : "iconutil failed")

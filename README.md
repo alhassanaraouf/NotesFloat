@@ -1,12 +1,14 @@
-<p align="center"><img src="Artwork/notes-float-icon.png" width="128" alt="Notes Float icon"></p>
+<p align="center"><img src="Artwork/NotesFloat-icon.png" width="128" alt="NotesFloat icon"></p>
 
-# Notes Float
+# NotesFloat
+
+**Website:** [alhassan.raoufs.me/work/NotesFloat](https://alhassan.raoufs.me/work/NotesFloat)
 
 A floating, Raycast‑Notes‑style window for **Apple Notes**. Press a shortcut and your notes appear above
 everything, including full‑screen apps, then disappear again. Everything lives in Apple Notes, so it syncs
 through iCloud to your other devices.
 
-macOS has no way to make Apple Notes' own window float, so Notes Float is its own small editor that reads
+macOS has no way to make Apple Notes' own window float, so NotesFloat is its own small editor that reads
 and saves your notes through Apple Notes.
 
 ## Features
@@ -27,20 +29,20 @@ and saves your notes through Apple Notes.
 ## Install
 
 1. Download the latest **NotesFloat‑x.y.z.dmg** from [Releases](../../releases), open it, and drag
-   **Notes Float** to **Applications**.
+   **NotesFloat** to **Applications**.
 2. Open it. Release builds aren't signed with an Apple Developer ID, so macOS blocks the first launch. Go to
    **System Settings › Privacy & Security** and click **Open Anyway**, or run:
    ```sh
    xattr -dr com.apple.quarantine "/Applications/NotesFloat.app"
    ```
-3. Allow Notes Float to control **Notes** when macOS asks.
+3. Allow NotesFloat to control **Notes** when macOS asks.
 
 Requires **macOS 26 or later**, on Apple silicon or Intel.
 
 ### Optional: Full Disk Access
 
 Apple Notes tells other apps that checklists are plain bullet lists, so saving a checklist note from here would
-turn its checklists into bullets. To stay safe, Notes Float asks you to confirm (⌘E) before editing any note
+turn its checklists into bullets. To stay safe, NotesFloat asks you to confirm (⌘E) before editing any note
 with a list. With **Full Disk Access** (Settings › Grant Full Disk Access…), it reads Apple Notes' database,
 **read‑only**, to:
 
@@ -85,7 +87,7 @@ These come from what Apple Notes lets other apps do:
   containing attachments, tables or images open read‑only (⌘O opens them in Apple Notes). Checklist notes ask
   for confirmation (⌘E) before editing, because they would become bullet lists.
 - **Locked notes** can't be opened here.
-- **Pins** you set in Notes Float are local to the app; pins from Apple Notes are shown (with Full Disk Access) but
+- **Pins** you set in NotesFloat are local to the app; pins from Apple Notes are shown (with Full Disk Access) but
   can't be changed.
 - Notes in legacy IMAP / Gmail accounts are only listed without Full Disk Access.
 

@@ -27,6 +27,6 @@ jobs:
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
           gh release create "$GITHUB_REF_NAME" dist/* \
-            --title "Notes Float ${GITHUB_REF_NAME}" \
+            --title "NotesFloat ${GITHUB_REF_NAME}" \
             --notes-file .github/release-notes.md \
             --generate-notes $pre
