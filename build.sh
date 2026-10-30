@@ -10,7 +10,8 @@ APP=NotesFloat.app
 VERSION=${VERSION:-0.0.0-dev}
 MIN_MACOS=26.0  # NSGlassEffectView / Liquid Glass
 
-rm -rf "$APP" build; mkdir -p "$APP/Contents/MacOS" build
+rm -rf "$APP" build; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build
+cp Artwork/AppIcon.icns "$APP/Contents/Resources/"  # regenerate with: swift Artwork/make-icon.swift
 for arch in arm64 x86_64; do
   swiftc -O -target "$arch-apple-macos$MIN_MACOS" *.swift -o "build/NotesFloat-$arch"
 done
@@ -20,7 +21,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>local.notesfloat</string>
+  <key>CFBundleIdentifier</key><string>app.notesfloat.NotesFloat</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleName</key><string>Notes Float</string>
   <key>CFBundleDisplayName</key><string>Notes Float</string>
   <key>CFBundleExecutable</key><string>NotesFloat</string>

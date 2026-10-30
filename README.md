@@ -1,3 +1,5 @@
+<p align="center"><img src="Artwork/notes-float-icon.png" width="128" alt="Notes Float icon"></p>
+
 # Notes Float
 
 A floating, Raycast‑Notes‑style window for **Apple Notes**. Press a shortcut and your notes appear above
@@ -97,7 +99,8 @@ Requires Xcode 26 or later.
 VERSION=1.0.0 ./build.sh --package   # also create dist/ zip + dmg + checksums
 ```
 
-The app is a few Swift files with no dependencies: `main.swift` (window, editor, commands), `Notes.swift`
+The app icon is drawn by `Artwork/make-icon.swift` (`swift Artwork/make-icon.swift` regenerates
+`Artwork/AppIcon.icns`). The app is a few Swift files with no dependencies: `main.swift` (window, editor, commands), `Notes.swift`
 (Apple Notes bridge, HTML conversion, read‑only database access) and `UI.swift` (command panel, toast, settings).
 
 ## Releasing
