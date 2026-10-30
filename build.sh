@@ -21,7 +21,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-  <key>CFBundleIdentifier</key><string>app.notesfloat.NotesFloat</string>
+  <key>CFBundleIdentifier</key><string>me.raoufs.alhassan.NotesFloat</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundleName</key><string>Notes Float</string>
   <key>CFBundleDisplayName</key><string>Notes Float</string>

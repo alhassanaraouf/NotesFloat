@@ -1036,11 +1036,15 @@ if CommandLine.arguments.contains("--test") {
     exit(0)
 }
 
-// One-time carry-over of settings (shortcut, pins, last note…) from the pre-0.2 identifier `local.notesfloat`.
-if !UserDefaults.standard.bool(forKey: "migratedFromLocal"), let old = UserDefaults.standard.persistentDomain(forName: "local.notesfloat") {
-    for (k, v) in old where UserDefaults.standard.object(forKey: k) == nil { UserDefaults.standard.set(v, forKey: k) }
+// One-time carry-over of settings (shortcut, pins, last note…) from earlier identifiers, newest first.
+if !UserDefaults.standard.bool(forKey: "migratedSettings") {
+    for oldID in ["app.notesfloat.NotesFloat", "local.notesfloat"] {
+        for (k, v) in UserDefaults.standard.persistentDomain(forName: oldID) ?? [:] where UserDefaults.standard.object(forKey: k) == nil {
+            UserDefaults.standard.set(v, forKey: k)
+        }
+    }
+    UserDefaults.standard.set(true, forKey: "migratedSettings")
 }
-UserDefaults.standard.set(true, forKey: "migratedFromLocal")
 UserDefaults.standard.register(defaults: ["hkCode": kVK_ANSI_N, "hkMods": controlKey | optionKey, "hkLabel": "⌃⌥N"])
 let app = App()
 var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
