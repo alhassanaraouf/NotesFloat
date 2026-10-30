@@ -1,0 +1,32 @@
+name: Release
+
+# Push a tag like v0.2.0 to build, test and publish a GitHub Release.
+# Tags with a suffix (v0.2.0-beta.1) are marked as pre-releases.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          echo "macOS SDK $(xcrun --show-sdk-version)"
+      - name: Build, self-test and package
+        run: VERSION="${GITHUB_REF_NAME#v}" ./build.sh --package
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=""
+          case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "Notes Float ${GITHUB_REF_NAME}" \
+            --notes-file .github/release-notes.md \
+            --generate-notes $pre

@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          echo "macOS SDK $(xcrun --show-sdk-version)"
+      - name: Build, self-test and package
+        run: VERSION="0.0.0-${GITHUB_SHA::7}" ./build.sh --package
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NotesFloat-${{ github.sha }}
+          path: dist/*
+          retention-days: 14
