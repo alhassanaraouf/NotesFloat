@@ -2,3 +2,4 @@ NotesFloat.app/
 build/
 dist/
 .DS_Store
+vendor/

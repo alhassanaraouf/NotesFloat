@@ -2,18 +2,34 @@
 # Builds NotesFloat.app (universal, macOS 26+), runs the self-test, then installs to /Applications and relaunches.
 #   ./build.sh               build + install + relaunch (local development)
 #   ./build.sh --no-install  build + self-test only
-#   ./build.sh --package     build + self-test + dist/ zip and dmg (used by the release workflow)
-# VERSION=1.2.3 sets the app version (defaults to 0.0.0-dev).
+#   ./build.sh --package     build + self-test + dist/ zip, dmg, checksums and Sparkle appcast (release workflow)
+# VERSION=1.2.3 sets the app version (default: latest git tag). Packaging signs the update with the EdDSA key in
+# $SPARKLE_ED_PRIVATE_KEY (CI) or, if SPARKLE_KEYCHAIN=1, the "me.raoufs.alhassan.NotesFloat" key in the login keychain.
 set -e
 cd "$(dirname "$0")"
 APP=NotesFloat.app
-VERSION=${VERSION:-0.0.0-dev}
+VERSION=${VERSION:-$(git describe --tags --abbrev=0 2>/dev/null | sed 's/^v//')}
+VERSION=${VERSION:-0.0.0}
 MIN_MACOS=26.0  # NSGlassEffectView / Liquid Glass
+REPO=alhassanaraouf/NotesFloat
+SPARKLE=2.10.1
+SPARKLE_SHA256=1a856d2a9edb8e628de88121d7be04cf0e2167f8641650b78fca00b14244cf27
+SPARKLE_PUBLIC_KEY=AEEvCN+evh+J+WKIQ/BlufWO72NLD3n4RGgdIJVQV8c=
+SP=vendor/Sparkle-$SPARKLE
 
-rm -rf "$APP" build; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" build
+if [ ! -d "$SP/Sparkle.framework" ]; then  # pinned, checksum-verified download
+  mkdir -p "$SP"
+  curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE/Sparkle-$SPARKLE.tar.xz" -o "$SP.tar.xz"
+  echo "$SPARKLE_SHA256  $SP.tar.xz" | shasum -a 256 -c -
+  tar -xf "$SP.tar.xz" -C "$SP" && rm "$SP.tar.xz"
+fi
+
+rm -rf "$APP" build; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks" build
 cp Artwork/AppIcon.icns "$APP/Contents/Resources/"  # regenerate with: swift Artwork/make-icon.swift
+ditto "$SP/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 for arch in arm64 x86_64; do
-  swiftc -O -target "$arch-apple-macos$MIN_MACOS" *.swift -o "build/NotesFloat-$arch"
+  swiftc -O -target "$arch-apple-macos$MIN_MACOS" -F "$SP" -framework Sparkle \
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks *.swift -o "build/NotesFloat-$arch"
 done
 lipo -create build/NotesFloat-arm64 build/NotesFloat-x86_64 -output "$APP/Contents/MacOS/NotesFloat"
 
@@ -37,17 +53,50 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleURLName</key><string>NotesFloat link</string>
     <key>CFBundleURLSchemes</key><array><string>notesfloat</string></array>
   </dict></array>
+  <key>SUFeedURL</key><string>https://github.com/$REPO/releases/latest/download/appcast.xml</string>
+  <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
+  <key>SUEnableAutomaticChecks</key><true/>
 </dict></plist>
 PLIST
-codesign -s - --force "$APP"  # ad-hoc: required to run on Apple silicon; not a Developer ID signature
+codesign -s - --force --deep "$APP"  # ad-hoc: required to run on Apple silicon; not a Developer ID signature
 "$APP/Contents/MacOS/NotesFloat" --test
 
 if [ "$1" = "--package" ]; then
   rm -rf dist; mkdir -p dist/dmg
-  ditto -c -k --keepParent "$APP" "dist/NotesFloat-$VERSION.zip"
+  ZIP="NotesFloat-$VERSION.zip"
+  ditto -c -k --keepParent "$APP" "dist/$ZIP"
   cp -R "$APP" dist/dmg/ && ln -s /Applications dist/dmg/Applications
   hdiutil create -quiet -volname "NotesFloat" -srcfolder dist/dmg -ov -format UDZO "dist/NotesFloat-$VERSION.dmg"
   rm -rf dist/dmg
+
+  # Sparkle feed: one item pointing at this release's zip, signed with EdDSA. Served from the latest release.
+  if [ -n "$SPARKLE_ED_PRIVATE_KEY" ]; then
+    SIG=$(printf '%s' "$SPARKLE_ED_PRIVATE_KEY" | "$SP/bin/sign_update" --ed-key-file - "dist/$ZIP")
+  elif [ "$SPARKLE_KEYCHAIN" = 1 ]; then
+    SIG=$("$SP/bin/sign_update" --account me.raoufs.alhassan.NotesFloat "dist/$ZIP")
+  fi
+  if [ -n "$SIG" ]; then
+    cat > dist/appcast.xml <<XML
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>NotesFloat</title>
+    <item>
+      <title>NotesFloat $VERSION</title>
+      <pubDate>$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')</pubDate>
+      <sparkle:version>$VERSION</sparkle:version>
+      <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>$MIN_MACOS</sparkle:minimumSystemVersion>
+      <sparkle:fullReleaseNotesLink>https://github.com/$REPO/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
+      <enclosure url="https://github.com/$REPO/releases/download/v$VERSION/$ZIP" type="application/octet-stream" $SIG />
+    </item>
+  </channel>
+</rss>
+XML
+    swift .github/verify-sparkle.swift "dist/$ZIP" "$(echo "$SIG" | sed -n 's/.*edSignature="\([^"]*\)".*/\1/p')" "$SPARKLE_PUBLIC_KEY"
+  else
+    echo "warning: no Sparkle key; dist/appcast.xml not created, so this release won't be offered as an update" >&2
+  fi
   (cd dist && shasum -a 256 NotesFloat-* > SHA256SUMS.txt && cat SHA256SUMS.txt)
   exit 0
 fi

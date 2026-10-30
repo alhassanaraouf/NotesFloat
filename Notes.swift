@@ -301,7 +301,7 @@ enum Notes {
         if s.string.hasSuffix("\n") { s.deleteCharacters(in: NSRange(location: s.length - 1, length: 1)) }
         let all = NSRange(location: 0, length: s.length)
         s.removeAttribute(.backgroundColor, range: all)
-        s.addAttribute(.foregroundColor, value: NSColor.textColor, range: all)  // follow dark mode
+        s.addAttribute(.foregroundColor, value: Theme.current.text, range: all)  // theme color (dynamic for light/dark)
         s.enumerateAttribute(.paragraphStyle, in: all) { v, r, _ in  // display-only spacing; not serialized
             let ps = (v as? NSParagraphStyle ?? paragraph).mutableCopy() as! NSMutableParagraphStyle
             ps.lineHeightMultiple = paragraph.lineHeightMultiple

@@ -25,6 +25,10 @@ and saves your notes through Apple Notes.
 - **Notes management**: pin, duplicate, move to a folder, delete (to Recently Deleted), copy as
   Markdown/text/HTML, export to Markdown/text/PDF, and copy a `notesfloat://` link.
 - **Hide from screen sharing** (⌥⌘H), zoom, and a toggleable format bar.
+- **Themes**: Apple Notes (default), Liquid Glass, Graphite and Paper. Pick one in Settings or ⌘K › Change Theme.
+- **Guided setup**: a welcome guide walks through every permission on first launch (and again from Settings).
+- **Automatic updates** via [Sparkle](https://sparkle-project.org). Turn checking and auto-install on or off in
+  Settings › Updates.
 
 ## Install
 
@@ -35,7 +39,9 @@ and saves your notes through Apple Notes.
    ```sh
    xattr -dr com.apple.quarantine "/Applications/NotesFloat.app"
    ```
-3. Allow NotesFloat to control **Notes** when macOS asks.
+3. Follow the welcome guide: it asks for access to Apple Notes and, optionally, Full Disk Access.
+
+After that, NotesFloat updates itself. (Versions before 0.3 don't include the updater, so install 0.3 manually once.)
 
 Requires **macOS 26 or later**, on Apple silicon or Intel.
 
@@ -43,7 +49,7 @@ Requires **macOS 26 or later**, on Apple silicon or Intel.
 
 Apple Notes tells other apps that checklists are plain bullet lists, so saving a checklist note from here would
 turn its checklists into bullets. To stay safe, NotesFloat asks you to confirm (⌘E) before editing any note
-with a list. With **Full Disk Access** (Settings › Grant Full Disk Access…), it reads Apple Notes' database,
+with a list. With **Full Disk Access** (offered in the welcome guide, or Settings › Permissions), it reads Apple Notes' database,
 **read‑only**, to:
 
 - know exactly which notes contain checklists, so plain lists open ready to edit,
@@ -102,19 +108,27 @@ VERSION=1.0.0 ./build.sh --package   # also create dist/ zip + dmg + checksums
 ```
 
 The app icon is drawn by `Artwork/make-icon.swift` (`swift Artwork/make-icon.swift` regenerates
-`Artwork/AppIcon.icns`). The app is a few Swift files with no dependencies: `main.swift` (window, editor, commands), `Notes.swift`
-(Apple Notes bridge, HTML conversion, read‑only database access) and `UI.swift` (command panel, toast, settings).
+`Artwork/AppIcon.icns`). The only dependency is Sparkle, downloaded (version-pinned and checksum-verified) into `vendor/` by `build.sh`.
+`main.swift` holds the window, editor and commands; `Notes.swift` the Apple Notes bridge, HTML conversion and
+read‑only database access; `UI.swift` the command panel and toast; `Setup.swift` permissions, updates, settings
+and onboarding; `Theme.swift` the themes.
 
 ## Releasing
 
-Push a version tag. GitHub Actions builds a universal app, runs the self‑test, and publishes a release with
-the `.dmg`, `.zip` and checksums:
+Push a version tag. GitHub Actions builds a universal app, runs the self‑test, signs the update for Sparkle,
+and publishes a release with the `.dmg`, `.zip`, checksums and `appcast.xml` (the update feed installed copies
+read from the latest release):
 
 ```sh
-git tag v0.2.0 && git push origin v0.2.0
+git tag v0.3.0 && git push origin v0.3.0
 ```
 
-Tags with a suffix, like `v0.2.0-beta.1`, are published as pre‑releases.
+Tags with a suffix, like `v0.3.0-beta.1`, are published as pre‑releases (not offered as updates).
+
+Update signing uses an EdDSA key stored in the maintainer's login keychain (account
+`me.raoufs.alhassan.NotesFloat`). Its public half is `SUPublicEDKey` in `build.sh`; the private half must be in
+the repository secret `SPARKLE_ED_PRIVATE_KEY`, and the release fails without it. Before publishing, the build
+checks the signature against the public key with `.github/verify-sparkle.swift`.
 
 ## License
 

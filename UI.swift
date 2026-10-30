@@ -56,8 +56,13 @@ final class ClickCatcher: NSView {
 
 final class HoverView: NSView {
     var onHover: (Bool) -> Void = { _ in }
+    var fill: NSColor? { didSet { needsDisplay = true } }  // theme background; nil lets the glass show
+    override var wantsUpdateLayer: Bool { true }
+    override func updateLayer() { layer?.backgroundColor = fill?.cgColor }  // resolves light/dark per appearance
+    override func viewDidChangeEffectiveAppearance() { needsDisplay = true }
     override init(frame: NSRect) {
         super.init(frame: frame)
+        wantsLayer = true
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
     required init?(coder: NSCoder) { fatalError() }
@@ -405,96 +410,5 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
             content.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: n.divider ? 0 : -16),
         ])
         return cell
-    }
-}
-
-final class Settings: NSObject {
-    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 150), styleMask: [.titled, .closable],
-                          backing: .buffered, defer: false)
-    let rec = NSButton()
-    let login = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
-    let access = NSTextField(wrappingLabelWithString: "")
-    lazy var grant = NSButton(title: "Grant Full Disk Access…", target: self, action: #selector(openPrivacy))
-    var monitor: Any?
-
-    override init() {
-        super.init()
-        window.title = "NotesFloat Settings"
-        window.isReleasedWhenClosed = false
-        window.level = .floating
-        rec.bezelStyle = .rounded
-        rec.target = self
-        rec.action = #selector(record)
-        login.target = self
-        login.action = #selector(toggleLogin)
-        access.font = .systemFont(ofSize: 11)
-        access.textColor = .secondaryLabelColor
-        access.preferredMaxLayoutWidth = 260
-        let accessCol = NSStackView(views: [access, grant])
-        accessCol.orientation = .vertical
-        accessCol.alignment = .leading
-        let grid = NSGridView(views: [[NSTextField(labelWithString: "Shortcut:"), rec], [NSGridCell.emptyContentView, login],
-                                      [NSTextField(labelWithString: "Checklists:"), accessCol]])
-        grid.rowSpacing = 14
-        let stack = NSStackView(views: [grid])
-        stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
-        window.contentView = stack
-        window.center()
-    }
-
-    func show() {
-        rec.title = UserDefaults.standard.string(forKey: "hkLabel") ?? ""
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
-        let ok = Notes.canReadDB
-        access.stringValue = ok ? "✓ Detected exactly. Only notes with checklists ask for ⌘E."
-                                : "Without Full Disk Access every note with a list asks for ⌘E, since any list might be a checklist."
-        grant.isHidden = ok
-        NSApp.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
-    }
-
-    @objc func record() {
-        guard monitor == nil else { return }
-        rec.title = "Type shortcut… (Esc cancels)"
-        monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [unowned self] e in
-            let f = e.modifierFlags.intersection([.command, .option, .control, .shift])
-            if e.keyCode != 53 {
-                guard !f.isDisjoint(with: [.command, .option, .control]) else { NSSound.beep(); return nil }
-                let d = UserDefaults.standard
-                let old = (d.integer(forKey: "hkCode"), d.integer(forKey: "hkMods"), d.string(forKey: "hkLabel"))
-                var mods = 0
-                if f.contains(.command) { mods |= cmdKey }
-                if f.contains(.option) { mods |= optionKey }
-                if f.contains(.control) { mods |= controlKey }
-                if f.contains(.shift) { mods |= shiftKey }
-                let key = e.characters(byApplyingModifiers: [])?.uppercased() ?? ""
-                let label = (f.contains(.control) ? "⌃" : "") + (f.contains(.option) ? "⌥" : "") + (f.contains(.shift) ? "⇧" : "")
-                    + (f.contains(.command) ? "⌘" : "") + (key == " " ? "Space" : key.isEmpty ? "#\(e.keyCode)" : key)
-                d.set(Int(e.keyCode), forKey: "hkCode"); d.set(mods, forKey: "hkMods"); d.set(label, forKey: "hkLabel")
-                if !HotKey.register() {  // taken by the system or another app: restore
-                    d.set(old.0, forKey: "hkCode"); d.set(old.1, forKey: "hkMods"); d.set(old.2, forKey: "hkLabel")
-                    HotKey.register()
-                    NSSound.beep()
-                }
-            }
-            NSEvent.removeMonitor(monitor!)
-            monitor = nil
-            rec.title = UserDefaults.standard.string(forKey: "hkLabel") ?? ""
-            return nil
-        }
-    }
-
-    @objc func openPrivacy() {
-        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!)
-    }
-
-    @objc func toggleLogin() {
-        do {
-            if login.state == .on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
-            if SMAppService.mainApp.status == .requiresApproval { SMAppService.openSystemSettingsLoginItems() }
-        } catch {
-            NSAlert(error: error).runModal()
-        }
-        login.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 }

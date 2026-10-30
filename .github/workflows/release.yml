@@ -18,8 +18,15 @@ jobs:
         run: |
           xcodebuild -version
           echo "macOS SDK $(xcrun --show-sdk-version)"
-      - name: Build, self-test and package
-        run: VERSION="${GITHUB_REF_NAME#v}" ./build.sh --package
+      - name: Build, self-test, package and sign the update
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
+            echo "::error::SPARKLE_ED_PRIVATE_KEY secret is missing; installed copies would never be offered this update."
+            exit 1
+          fi
+          VERSION="${GITHUB_REF_NAME#v}" ./build.sh --package
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}

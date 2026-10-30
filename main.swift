@@ -28,6 +28,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     var root: HoverView!
     var popupHeight: CGFloat = 0
     let settings = Settings()
+    let onboarding = Onboarding()
     let status = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let titleLabel = NSTextField(labelWithString: "")
     let statusLabel = NSTextField(labelWithString: "")
@@ -82,10 +83,13 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
                                         icon: "lock.open", key: "⌘e") { self.unlock() }] : [])),
             ("View", [Cmd(title: hidden ? "Show While Screen Sharing" : "Hide While Screen Sharing", icon: "video.slash", key: "⌥⌘h") { self.toggleSharing() },
              Cmd(title: "Toggle Format Bar", icon: "textformat.size", key: "⌥⌘,") { self.toggleFormatBar() },
+             Cmd(title: "Change Theme…", icon: "paintpalette", key: "") { self.themeMenu() },
              Cmd(title: "Actual Size", icon: "1.magnifyingglass", key: "⌘0", enabled: scroll.magnification != 1) { self.zoom(0) },
              Cmd(title: "Zoom In", icon: "plus.magnifyingglass", key: "⌘=") { self.zoom(1) },
              Cmd(title: "Zoom Out", icon: "minus.magnifyingglass", key: "⌘-") { self.zoom(-1) }]),
             ("App", [Cmd(title: "Settings", icon: "gearshape", key: "⌘,") { self.settings.show() },
+                     Cmd(title: "Check for Updates…", icon: "arrow.down.circle", key: "") { Updates.shared.checkNow() },
+                     Cmd(title: "Welcome Guide", icon: "hand.wave", key: "") { self.onboarding.show() },
                      Cmd(title: "Quit NotesFloat", icon: "power", key: "⌘q") { NSApp.terminate(nil) }]),
             ("Trash", [Cmd(title: "Show Recently Deleted Notes", icon: "trash", key: "") { self.deletedMenu() },
                        Cmd(title: "Delete Note", icon: "trash", key: "⌃x", destructive: true, enabled: cur != nil) { self.deleteNote() }]),
@@ -324,6 +328,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Show NotesFloat", action: #selector(showFromMenu), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit NotesFloat", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         status.menu = menu
@@ -336,11 +341,38 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [unowned self] _ in syncFromNotes() }
         // The first HTML import loads WebKit (~230 ms); pay that now instead of on the first hotkey press.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = Notes.attributed("<div>warm-up</div>") }
-        if d.string(forKey: "noteID") == nil { show() }  // first run
+        _ = Updates.shared.controller  // starts Sparkle's scheduled checks
+        settings.onTheme = { [unowned self] in applyTheme() }
+        settings.onWelcome = { [unowned self] in onboarding.show() }
+        onboarding.onFinish = { [unowned self] in show() }
+        applyTheme()
+        if !d.bool(forKey: "onboarded") { onboarding.show() }  // first run: permissions before anything touches Notes
     }
 
     @objc func showFromMenu() { show() }
     @objc func showSettings() { settings.show() }
+    @objc func checkUpdates() { Updates.shared.checkNow() }
+
+    func themeMenu() {
+        present(Theme.all.map { t in
+            Item(title: t.name, icon: t.id == Theme.current.id ? "checkmark.circle.fill" : "circle") {
+                self.d.set(t.id, forKey: "theme")
+                self.applyTheme()
+                self.toast.show("\(t.name) theme", "paintpalette")
+            }
+        }, placeholder: "Choose a theme…")
+    }
+
+    func applyTheme() {
+        let t = Theme.current
+        panel.appearance = t.appearance.map { NSAppearance(named: $0)! }
+        root.fill = t.background
+        text.insertionPointColor = t.accent
+        text.selectedTextAttributes = [.backgroundColor: t.accent.withAlphaComponent(0.3)]
+        text.linkTextAttributes = [.foregroundColor: t.accent, .underlineStyle: NSUnderlineStyle.single.rawValue, .cursor: NSCursor.pointingHand]
+        text.typingAttributes[.foregroundColor] = t.text
+        if let c = cur, !hard { reopenInPlace(c.id) }  // re-render existing text in the theme's colors
+    }
 
     func application(_ app: NSApplication, open urls: [URL]) {  // notesfloat://open?id=…
         guard let id = urls.first.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) })?
@@ -506,7 +538,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         soft = !(d.stringArray(forKey: "unlocked") ?? []).contains(id) && !wroteLast(id, n.date)
             && (listRisk || n.html.range(of: #"class=|color[:=]|(^|[\s>])#\w"#, options: .regularExpression) != nil)
         text.textStorage!.setAttributedString(n.locked
-            ? NSAttributedString(string: "🔒 This note is locked. ⌘O opens it in Notes.", attributes: [.font: body, .foregroundColor: NSColor.textColor])
+            ? NSAttributedString(string: "🔒 This note is locked. ⌘O opens it in Notes.", attributes: [.font: body, .foregroundColor: Theme.current.text])
             : Notes.attributed(n.html))
         lastHTML = Notes.html(text.attributedString())  // baseline: untouched notes are never rewritten
         dirty = false
@@ -526,7 +558,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         cur = nil
         text.textStorage!.setAttributedString(NSAttributedString(
             string: "Can't reach Apple Notes.\nAllow NotesFloat in System Settings › Privacy & Security › Automation, then reopen.",
-            attributes: [.font: body, .foregroundColor: NSColor.textColor]))
+            attributes: [.font: body, .foregroundColor: Theme.current.text]))
         applyMode()
     }
 
@@ -705,7 +737,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         guard markers.count == paras.count else { return }  // layouts disagree: keep plain bullets rather than guess
         for (m, p) in zip(markers, paras).reversed() where p.style == 103 && m.length > 0 {
             var a = st.attributes(at: m.location, effectiveRange: nil)
-            a[.foregroundColor] = p.done ? NSColor.systemOrange : NSColor.secondaryLabelColor
+            a[.foregroundColor] = p.done ? Theme.current.accent : NSColor.secondaryLabelColor
             st.replaceCharacters(in: m, with: NSAttributedString(string: "\t\(p.done ? "☑" : "☐")\t", attributes: a))
         }
     }
@@ -856,7 +888,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         guard sr.location == end, p.length > 0, p.location < ns.length,
               let f = tv.textStorage!.attribute(.font, at: p.location, effectiveRange: nil) as? NSFont,
               f.pointSize >= 15.5, !f.isFixedPitch else { return false }
-        let bodyAttrs: [NSAttributedString.Key: Any] = [.font: body, .foregroundColor: NSColor.textColor, .paragraphStyle: Notes.paragraph]
+        let bodyAttrs: [NSAttributedString.Key: Any] = [.font: body, .foregroundColor: Theme.current.text, .paragraphStyle: Notes.paragraph]
         tv.insertText("\n", replacementRange: sr)  // terminates the heading paragraph
         let next = NSRange(location: sr.location + 1, length: 1)  // old newline now ends the new empty line
         let now = tv.string as NSString  // `ns` is a pre-insert snapshot
