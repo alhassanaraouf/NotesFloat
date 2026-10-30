@@ -188,6 +188,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         updateShareButton()
         toolbar.distribution = .equalCentering
         toolbar.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 2, right: 10)
+        // Fixed heights: the vertical column otherwise squeezes the bar to its label height and the 26pt buttons
+        // overflow past the window's top edge (worse with the screen-sharing eye shown in the nested center stack).
+        toolbar.heightAnchor.constraint(equalToConstant: 40).isActive = true
+        center.heightAnchor.constraint(equalToConstant: 26).isActive = true
         left.alphaValue = 0
         right.alphaValue = 0
         root.onHover = { inside in
