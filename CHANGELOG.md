@@ -6,6 +6,8 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-01
+
 ### Added
 - The welcome guide now introduces **quick capture** and offers the optional Accessibility permission it uses
   to grab selected text.
