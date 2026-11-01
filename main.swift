@@ -338,9 +338,9 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         status.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "NotesFloat")
         let menu = NSMenu()
         menu.addItem(withTitle: "Show NotesFloat", action: #selector(showFromMenu), keyEquivalent: "").target = self
-        menu.addItem(withTitle: "About NotesFloat", action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Settings…", action: #selector(showSettings), keyEquivalent: "").target = self
         menu.addItem(withTitle: "Check for Updates…", action: #selector(checkUpdates), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "About NotesFloat", action: #selector(showAbout), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit NotesFloat", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         status.menu = menu

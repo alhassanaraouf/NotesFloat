@@ -6,6 +6,9 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+### Changed
+- **About NotesFloat** sits below **Check for Updates…** in the menu bar menu.
+
 ## [0.4.0] - 2026-11-01
 
 ### Added
