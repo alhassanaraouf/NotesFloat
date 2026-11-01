@@ -75,14 +75,16 @@ if [ -n "$SIGNING_P12" ]; then
   KC="$PWD/build/signing.keychain-db"; KCPW=$(uuidgen)
   security create-keychain -p "$KCPW" "$KC" && security set-keychain-settings "$KC" && security unlock-keychain -p "$KCPW" "$KC"
   (umask 077; printf '%s' "$SIGNING_P12" | base64 -d > build/signing.p12)
-  security import build/signing.p12 -k "$KC" -P "$SIGNING_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+  # Secrets set via `op read … | gh secret set` keep op's trailing newline; strip it.
+  security import build/signing.p12 -k "$KC" -P "$(printf '%s' "$SIGNING_P12_PASSWORD" | tr -d '\r\n')" -T /usr/bin/codesign >/dev/null
   rm -P build/signing.p12
   security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
+  security list-keychains -d user -s "$KC" $(security list-keychains -d user | tr -d '"')  # CI runners need it searchable
 elif [ -f "$HOME/Library/Keychains/NotesFloat-signing.keychain-db" ]; then
   KC="$HOME/Library/Keychains/NotesFloat-signing.keychain-db"
 fi
 if [ -n "$KC" ]; then
-  sign() { codesign --force --deep --keychain "$KC" -s "$IDENTITY" "$APP" 2>/dev/null; }
+  sign() { out=$(codesign --force --deep --keychain "$KC" -s "$IDENTITY" "$APP" 2>&1) || { echo "$out" >&2; return 1; }; }
   sign || { security unlock-keychain -p "$(op read 'op://Private/6eqzyc4il27hyqm4mj4gndc4lu/keychainpassword')" "$KC" && sign; } \
     || { echo "error: signing with $IDENTITY failed" >&2; exit 1; }
   echo "signed: $IDENTITY"
