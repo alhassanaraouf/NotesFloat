@@ -368,10 +368,42 @@ enum Notes {
         for f in numberFixes(s).reversed() {
             s.replaceCharacters(in: f.range, with: NSAttributedString(string: f.marker, attributes: s.attributes(at: f.range.location, effectiveRange: nil)))
         }
+        setDirections(s, in: NSRange(location: 0, length: s.length))
         return s
     }
 
+    // Apple Notes picks each paragraph's direction from its first letter (its HTML has no dir=). AppKit's import pins
+    // everything left-to-right, and "natural" alignment follows the UI language, not the text, so set it explicitly:
+    // Arabic/Hebrew paragraphs read right-to-left, right-aligned, with list bullets on the right. Display only.
+    static func setDirections(_ s: NSMutableAttributedString, in range: NSRange) {
+        let ns = s.string as NSString
+        ns.enumerateSubstrings(in: ns.paragraphRange(for: range), options: [.byParagraphs, .substringNotRequired]) { _, p, e, _ in
+            guard e.length > 0, p.location < s.length else { return }
+            let rtl = isRTL(ns.substring(with: NSRange(location: p.location + markerLength(ns, p), length: p.length - markerLength(ns, p))))
+            let cur = s.attribute(.paragraphStyle, at: p.location, effectiveRange: nil) as? NSParagraphStyle ?? paragraph
+            let dir: NSWritingDirection = rtl ? .rightToLeft : .leftToRight
+            guard cur.baseWritingDirection != dir || cur.alignment != (rtl ? .right : .left) else { return }
+            let ps = cur.mutableCopy() as! NSMutableParagraphStyle
+            ps.baseWritingDirection = dir
+            ps.alignment = rtl ? .right : .left
+            s.addAttribute(.paragraphStyle, value: ps, range: e)
+        }
+    }
+
+    // First letter decides, like the Unicode bidi rule Apple Notes follows; digits and punctuation don't count.
+    static func isRTL(_ text: String) -> Bool {
+        for u in text.unicodeScalars where CharacterSet.letters.contains(u) {
+            switch u.value {
+            case 0x0590...0x08FF, 0xFB1D...0xFDFF, 0xFE70...0xFEFF: return true
+            default: return false
+            }
+        }
+        return false
+    }
+
     static let numbered = NSTextList.MarkerFormat("{decimal}.")
+    // Dashed lists draw "–" like Apple Notes; a plain "-" is a bidi number separator and sticks to Arabic text.
+    static let dashed = NSTextList.MarkerFormat("–")
     static func isNumbered(_ l: NSTextList) -> Bool { l.markerFormat == numbered || l.markerFormat == .decimal }
 
     // Numbered items whose "\t<n>.\t" marker is out of order, counting per list object (all items of one list share it).

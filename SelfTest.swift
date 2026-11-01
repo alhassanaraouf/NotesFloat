@@ -77,6 +77,23 @@ func runSelfTests() -> Never {
     e = editor("<ol><li>x</li><li>y</li></ol>")
     check(markers() == ["1.", "2."], "loaded numbered lists show “1.”", "\(markers())")
 
+    // Right-to-left: direction is display-only (Apple Notes' HTML has none), decided per paragraph by its first letter
+    let rtlHTML = "<h1>ملاحظات</h1><div>نص عربي مع English</div><div>English first مع عربي</div><ul><li>بند</li><ul><li>فرعي</li></ul></ul><ol><li>واحد</li></ol>"
+    let rtl = Notes.attributed(rtlHTML)
+    check(Notes.html(rtl) == rtlHTML, "Arabic note saves back unchanged", Notes.html(rtl))
+    let dirs: [String] = (rtl.string as NSString).components(separatedBy: "\n").enumerated().map { i, _ in
+        let loc = (rtl.string as NSString).components(separatedBy: "\n").prefix(i).reduce(0) { $0 + ($1 as NSString).length + 1 }
+        let ps = rtl.attribute(.paragraphStyle, at: loc, effectiveRange: nil) as? NSParagraphStyle
+        return ps?.baseWritingDirection == .rightToLeft && ps?.alignment == .right ? "R" : ps?.baseWritingDirection == .leftToRight && ps?.alignment == .left ? "L" : "?"
+    }
+    check(dirs == ["R", "R", "L", "R", "R", "R"], "paragraph direction follows the first letter", "\(dirs)")
+    check(Notes.isRTL("123 - مرحبا") && !Notes.isRTL("Hi مرحبا") && Notes.isRTL("שלום") && !Notes.isRTL("١٢٣"), "first-letter rule ignores digits and punctuation")
+    e = editor()
+    type(e, "- عنصر"); e.fixDirections()
+    let dashPS = e.storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
+    check(html(e) == "<ul><li>عنصر</li></ul>" && e.text.string.hasPrefix("\t–\t") && dashPS?.baseWritingDirection == .rightToLeft,
+          "typed Arabic dashed list: “–”, right-to-left, saves as a list", "\(html(e)) \(String(reflecting: e.text.string))")
+
     // Notes' database format: gzip(protobuf), built by hand: title, a ticked checklist item, a bullet
     func varint(_ v: Int) -> [UInt8] { var v = UInt64(v), o: [UInt8] = []; repeat { o.append(UInt8(v & 0x7f) | (v > 0x7f ? 0x80 : 0)); v >>= 7 } while v > 0; return o }
     func num(_ f: Int, _ v: Int) -> [UInt8] { varint(f << 3) + varint(v) }

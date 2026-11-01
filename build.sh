@@ -95,7 +95,25 @@ fi
 if [ -n "$SIGNING_P12" ]; then security delete-keychain "$KC"; fi  # release.yml requires the signing secrets
 "$APP/Contents/MacOS/NotesFloat" --test
 
+# This version's CHANGELOG.md section ("## [x.y.z] - date" up to the next "## ["): release notes and update window.
+changelog() { awk -v v="[$1]" '/^## \[/ { p = index($0, v) == 4; next } p' CHANGELOG.md | sed -e '/./,$!d'; }
+# Minimal Markdown → HTML for Sparkle's update window: ### headings, "- " bullets (indented lines continue them), **bold**, `code`.
+changelog_html() {
+  sed -e 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g' -e 's/\*\*\([^*]*\)\*\*/<b>\1<\/b>/g' -e 's/`\([^`]*\)`/<code>\1<\/code>/g' |
+  awk '/^### / { if (ul) print "</ul>"; ul = 0; sub(/^### /, ""); print "<h3>" $0 "</h3>"; next }
+       /^- /   { if (!ul) print "<ul>"; ul = 1; sub(/^- /, ""); print "<li>" $0; next }
+       /^  /   { print; next }
+       NF      { if (ul) print "</ul>"; ul = 0; print "<p>" $0 "</p>" }
+       END     { if (ul) print "</ul>" }'
+}
+
 if [ "$1" = "--package" ]; then
+  NOTES=$(changelog "$VERSION")
+  if [ -z "$NOTES" ]; then
+    [ -n "$REQUIRE_CHANGELOG" ] && { echo "error: CHANGELOG.md has no \"## [$VERSION]\" section" >&2; exit 1; }
+    echo "warning: no CHANGELOG.md section for $VERSION" >&2
+  fi
+  printf '%s\n' "$NOTES" > build/whats-new.md
   rm -rf dist; mkdir -p dist/dmg
   ZIP="NotesFloat-$VERSION.zip"
   ditto -c -k --keepParent "$APP" "dist/$ZIP"
@@ -121,6 +139,7 @@ if [ "$1" = "--package" ]; then
       <sparkle:version>$VERSION</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>$MIN_MACOS</sparkle:minimumSystemVersion>
+      <description><![CDATA[$(printf '%s\n' "$NOTES" | changelog_html)]]></description>
       <sparkle:fullReleaseNotesLink>https://github.com/$REPO/releases/tag/v$VERSION</sparkle:fullReleaseNotesLink>
       <enclosure url="https://github.com/$REPO/releases/download/v$VERSION/$ZIP" type="application/octet-stream" $SIG />
     </item>

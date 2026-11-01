@@ -118,7 +118,8 @@ and onboarding; `Theme.swift` the themes.
 
 ## Releasing
 
-Push a version tag. GitHub Actions builds a universal app, runs the self‑test, signs the update for Sparkle,
+Add your changes under **Unreleased** in [CHANGELOG.md](CHANGELOG.md), then rename that heading to the version
+and date (`## [0.4.0] - 2026-11-15`), commit, and push a version tag. GitHub Actions builds a universal app, runs the self‑test, signs the update for Sparkle,
 and publishes a release with the `.dmg`, `.zip`, checksums and `appcast.xml` (the update feed installed copies
 read from the latest release):
 

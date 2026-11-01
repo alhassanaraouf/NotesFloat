@@ -909,6 +909,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func textDidChange(_ n: Notification) {
         editor.renumber()  // keeps numbered lists 1, 2, 3 after any edit (no-op when nothing changed)
+        editor.fixDirections()  // Arabic/Hebrew lines turn right-to-left as you type
         dirty = true
         liveTitle()
         timer?.invalidate()

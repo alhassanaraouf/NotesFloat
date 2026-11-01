@@ -306,7 +306,7 @@ final class Onboarding: NSObject {
     var step = 0
     var timer: Timer?
     var onFinish: () -> Void = {}
-    let steps = 5
+    let steps = 6
 
     override init() {
         super.init()
@@ -381,6 +381,14 @@ final class Onboarding: NSObject {
                      wrapping("In System Settings, turn on NotesFloat in the Full Disk Access list. You can skip this and turn it on later in Settings.", 12),
                      row([NSButton(title: "Open Privacy Settings…", target: self, action: #selector(openDisk)), status], spacing: 12)]
         case 3:
+            title.stringValue = "Quick capture (optional)"
+            let keys = UserDefaults.standard.string(forKey: "capLabel") ?? "⌃⌥⇧N"
+            views = [symbol("tray.and.arrow.down"), title,
+                     wrapping("Press \(keys) in any app to add text to a note without opening NotesFloat. Choose which note with ⌘K › Capture Into This Note.", 14),
+                     wrapping("With Accessibility access it grabs the text you've selected; without it, it adds what's on your clipboard. Either way you can also use Services › Add to NotesFloat in any app.", 13),
+                     wrapping("Click Allow, then turn on NotesFloat in System Settings › Privacy & Security › Accessibility.", 12),
+                     row([NSButton(title: "Allow Accessibility…", target: self, action: #selector(allowAX)), status], spacing: 12)]
+        case 4:
             title.stringValue = "Make it yours"
             let login = NSButton(checkboxWithTitle: "Launch NotesFloat at login", target: self, action: #selector(toggleLogin(_:)))
             login.state = LoginItem.on ? .on : .off
@@ -426,8 +434,8 @@ final class Onboarding: NSObject {
             status.textColor = s.1
             next.isEnabled = Access.notes() == .granted  // required: everything depends on it
             next.title = "Continue"
-        case 2:
-            let ok = Access.fullDisk
+        case 2, 3:  // optional permissions: Full Disk Access, Accessibility
+            let ok = step == 2 ? Access.fullDisk : Access.accessibility
             status.stringValue = ok ? "✓ Allowed" : ""
             status.textColor = .systemGreen
             next.isEnabled = true
@@ -463,6 +471,7 @@ final class Onboarding: NSObject {
     }
 
     @objc func openDisk() { Access.openPane("Privacy_AllFiles") }
+    @objc func allowAX() { Access.requestAccessibility() }
     @objc func toggleLogin(_ b: NSButton) { LoginItem.set(b.state == .on) }
     @objc func toggleUpdates(_ b: NSButton) { Updates.shared.updater.automaticallyChecksForUpdates = b.state == .on }
 }

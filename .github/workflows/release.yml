@@ -32,14 +32,15 @@ jobs:
             echo "::error::SIGNING_P12 / SIGNING_P12_PASSWORD secrets are missing; an ad-hoc build would reset users' permissions."
             exit 1
           fi
-          VERSION="${GITHUB_REF_NAME#v}" ./build.sh --package
+          VERSION="${GITHUB_REF_NAME#v}" REQUIRE_CHANGELOG=1 ./build.sh --package
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           pre=""
           case "$GITHUB_REF_NAME" in *-*) pre="--prerelease" ;; esac
+          { echo "## What's new"; echo; cat build/whats-new.md; echo; cat .github/release-notes.md; } > build/release-notes.md
           gh release create "$GITHUB_REF_NAME" dist/* \
             --title "NotesFloat ${GITHUB_REF_NAME}" \
-            --notes-file .github/release-notes.md \
+            --notes-file build/release-notes.md \
             --generate-notes $pre

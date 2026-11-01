@@ -32,7 +32,7 @@ final class Editor {
         ps.firstLineHeadIndent = 0
         ps.headIndent = 36 * d
         ps.tabStops = d == 0 ? NSParagraphStyle.default.tabStops
-            : [NSTextTab(textAlignment: .left, location: 36 * d - 25), NSTextTab(textAlignment: .left, location: 36 * d)]
+            : [NSTextTab(textAlignment: .left, location: 36 * d - 25), NSTextTab(textAlignment: .natural, location: 36 * d)]  // as AppKit's import: keeps the gap in RTL
     }
 
     static func listLevel(_ fmt: NSTextList.MarkerFormat, depth: Int) -> NSTextList {
@@ -61,7 +61,7 @@ final class Editor {
 
     // Toggles a list on the selected paragraphs (off if the first one already has this kind).
     func list(_ kind: NSTextList.MarkerFormat) {
-        let fmt = kind == .decimal ? Notes.numbered : kind  // shows "1." like Apple Notes
+        let fmt = kind == .decimal ? Notes.numbered : kind == .hyphen ? Notes.dashed : kind  // "1." and "–" like Apple Notes
         let pr = (text.string as NSString).paragraphRange(for: text.selectedRange())
         let old = storage.attributedSubstring(from: pr)
         let firstStyle = (pr.location < storage.length ? storage.attribute(.paragraphStyle, at: pr.location, effectiveRange: nil)
@@ -113,6 +113,12 @@ final class Editor {
         storage.replaceCharacters(in: li.para, with: out)
         text.didChangeText()
         text.setSelectedRange(NSRange(location: li.para.location + (marker as NSString).length + max(0, caret), length: 0))
+    }
+
+    // Direction follows each paragraph's first letter (see Notes.setDirections); re-check the edited paragraphs.
+    // Attribute-only and display-only, so it skips undo registration.
+    func fixDirections() {
+        Notes.setDirections(storage, in: text.selectedRange())
     }
 
     // Numbers are text, so recount every numbered list after an edit: moving, adding or deleting items keeps 1, 2, 3.
