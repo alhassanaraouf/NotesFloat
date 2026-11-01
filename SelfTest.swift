@@ -30,8 +30,9 @@ func runSelfTests() -> Never {
     func type(_ e: Editor, _ str: String) {
         for ch in str {
             let r = e.text.selectedRange()
-            if let t = e.listTrigger(r, String(ch)) { e.startList(replacing: t.prefix, t.format); continue }
+            if let t = e.blockTrigger(r, String(ch)) { e.startBlock(replacing: t.prefix, t.block); continue }
             e.text.insertText(String(ch), replacementRange: r)
+            if Editor.inlineTriggers.contains(String(ch)) { e.inlineShortcut() }
             e.renumber()
         }
     }
@@ -93,6 +94,35 @@ func runSelfTests() -> Never {
     let dashPS = e.storage.attribute(.paragraphStyle, at: 0, effectiveRange: nil) as? NSParagraphStyle
     check(html(e) == "<ul><li>عنصر</li></ul>" && e.text.string.hasPrefix("\t–\t") && dashPS?.baseWritingDirection == .rightToLeft,
           "typed Arabic dashed list: “–”, right-to-left, saves as a list", "\(html(e)) \(String(reflecting: e.text.string))")
+
+    // Markdown shortcuts while typing (and what must stay literal)
+    for (typed, want, what) in [
+        ("# Big", "<h1>Big</h1>", "“# ” → Title"), ("## Mid", "<h2>Mid</h2>", "“## ” → Heading"), ("### Small", "<h3>Small</h3>", "“### ” → Subheading"),
+        ("a **bold** b", "<div>a <b>bold</b> b</div>", "**bold**"), ("an _it_ x", "<div>an <i>it</i> x</div>", "_italic_"),
+        ("an *it* x", "<div>an <i>it</i> x</div>", "*italic*"), ("~~gone~~", "<div><strike>gone</strike></div>", "~~strike~~"),
+        ("run `ls -la` now", "<div>run <tt>ls -la</tt> now</div>", "`code`"),
+        ("see [docs](https://x.y/a)", "<div>see <a href=\"https://x.y/a\">docs</a></div>", "[text](url)"),
+        ("snake_case_name", "<div>snake_case_name</div>", "snake_case stays"), ("2*3*4", "<div>2*3*4</div>", "2*3*4 stays"),
+        ("#tag here", "<div>#tag here</div>", "#tag stays"), ("`a **b** c`", "<div><tt>a **b** c</tt></div>", "no formatting inside code"),
+        ("x **bold** and _it_", "<div>x <b>bold</b> and <i>it</i></div>", "two spans on one line"),
+    ] {
+        e = editor()
+        type(e, typed)
+        check(html(e) == want, "typing \(what)", html(e))
+    }
+    e = editor()
+    type(e, "```"); _ = e.command(newline); type(e, "let x = 1")
+    check(html(e) == "<div><tt>let x = 1</tt></div>", "``` then ↩ starts a Monostyled paragraph", html(e))
+
+    // Pasting Markdown
+    let md = "# Title\nSome **bold**, _italic_, `code`, ~~gone~~ and a [link](https://x.y/).\n\n- one\n- two\n  - nested\n\n1. first\n2. second\n\n- [ ] todo\n- [x] done\n\n```swift\nlet x = 1\n```\n> quoted\n---\nend"
+    let mdWant = "<h1>Title</h1><div>Some <b>bold</b>, <i>italic</i>, <tt>code</tt>, <strike>gone</strike> and a <a href=\"https://x.y/\">link</a>.</div>"
+        + "<div><br></div><ul><li>one</li><li>two</li><ul><li>nested</li></ul></ul><ol><li>first</li><li>second</li></ol>"
+        + "<ul><li>☐ todo</li><li>☑ done</li></ul><div><br></div><div><tt>let x = 1</tt></div><div>quoted</div><div>end</div>"
+    check(Notes.markdownHTML(md) == mdWant, "Markdown paste → Apple Notes HTML", Notes.markdownHTML(md))
+    check(Notes.html(Notes.attributed(Notes.markdownHTML(md))) == mdWant, "pasted Markdown saves as the same HTML", Notes.html(Notes.attributed(Notes.markdownHTML(md))))
+    check(Notes.looksLikeMarkdown(md) && Notes.looksLikeMarkdown("- milk\n- eggs") && !Notes.looksLikeMarkdown("Just a sentence, 2*3*4 = 24.")
+          && !Notes.looksLikeMarkdown("email me at a_b_c@x.y"), "detects Markdown, leaves plain text alone")
 
     // Notes' database format: gzip(protobuf), built by hand: title, a ticked checklist item, a bullet
     func varint(_ v: Int) -> [UInt8] { var v = UInt64(v), o: [UInt8] = []; repeat { o.append(UInt8(v & 0x7f) | (v > 0x7f ? 0x80 : 0)); v >>= 7 } while v > 0; return o }

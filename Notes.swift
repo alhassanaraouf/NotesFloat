@@ -442,6 +442,70 @@ enum Notes {
         return out
     }
 
+    // MARK: Markdown → Apple Notes HTML (for pasting). Only what Apple Notes can store; the rest stays as text.
+
+    static func looksLikeMarkdown(_ s: String) -> Bool {
+        let r = NSRange(s.startIndex..., in: s)
+        let block = try! NSRegularExpression(pattern: #"(?m)^(#{1,6} |\s*([-*+]|\d+[.)]) |```|> )"#)
+        let inline = try! NSRegularExpression(pattern: #"\*\*[^*\n]+\*\*|\[[^\]\n]+\]\((https?|mailto):|`[^`\n]+`|~~[^~\n]+~~"#)
+        return block.firstMatch(in: s, range: r) != nil || inline.firstMatch(in: s, range: r) != nil
+    }
+
+    static func markdownHTML(_ md: String) -> String {
+        var out = "", stack: [(tag: String, indent: Int)] = [], inCode = false, blank = false
+        func closeLists() { while let l = stack.popLast() { out += "</\(l.tag)>" } }
+        func gap() { if blank, !out.isEmpty { out += "<div><br></div>" }; blank = false }
+        for raw in md.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n") {
+            let line = raw.replacingOccurrences(of: "\t", with: "    ")
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") { closeLists(); gap(); inCode.toggle(); continue }
+            if inCode { out += line.isEmpty ? "<div><br></div>" : "<div><tt>\(esc(line))</tt></div>"; continue }
+            if trimmed.isEmpty { blank = true; continue }  // decided by the next line: lists stay together across blanks
+            if trimmed.range(of: #"^([-*_])( ?\1){2,}$"#, options: .regularExpression) != nil { closeLists(); gap(); continue }  // rule: Notes has none
+            if let h = trimmed.range(of: #"^#{1,6} "#, options: .regularExpression) {
+                closeLists(); gap()
+                let tag = ["h1", "h2"].indices.contains(trimmed[h].count - 2) ? ["h1", "h2"][trimmed[h].count - 2] : "h3"
+                out += "<\(tag)>\(mdInline(String(trimmed[h.upperBound...])))</\(tag)>"
+                continue
+            }
+            if let m = trimmed.range(of: #"^([-*+]|\d+[.)]) "#, options: .regularExpression) {
+                let indent = line.prefix { $0 == " " }.count, tag = trimmed.first!.isNumber ? "ol" : "ul"
+                if stack.isEmpty { gap() } else { blank = false }
+                while let l = stack.last, l.indent > indent { out += "</\(stack.removeLast().tag)>" }
+                if let l = stack.last, l.indent == indent, l.tag != tag { out += "</\(stack.removeLast().tag)>" }
+                if stack.last.map({ $0.indent < indent }) ?? true { out += "<\(tag)>"; stack.append((tag, indent)) }
+                var item = String(trimmed[m.upperBound...])
+                if item.hasPrefix("[ ] ") { item = "☐ " + item.dropFirst(4) }  // Apple Notes won't take real checklists from us
+                else if item.lowercased().hasPrefix("[x] ") { item = "☑ " + item.dropFirst(4) }
+                out += "<li>\(mdInline(item))</li>"
+                continue
+            }
+            closeLists(); gap()
+            let text = trimmed.hasPrefix(">") ? String(trimmed.drop { $0 == ">" || $0 == " " }) : trimmed  // quotes as text
+            out += "<div>\(mdInline(text))</div>"
+        }
+        closeLists()
+        return out.isEmpty ? "<div><br></div>" : out
+    }
+
+    static func mdInline(_ s: String) -> String {
+        let parts = s.components(separatedBy: "`")  // code spans first, so their insides stay literal
+        return parts.enumerated().map { i, part in
+            if i % 2 == 1, i < parts.count - 1 { return "<tt>\(esc(part))</tt>" }
+            var t = esc(i % 2 == 1 ? "`" + part : part)
+            for (pattern, template) in [
+                (#"!\[([^\]]*)\]\([^)]*\)"#, "$1"),  // images: keep the alt text
+                (#"\[([^\]]+)\]\(((?:https?://|mailto:)[^\s)]+)\)"#, "<a href=\"$2\">$1</a>"),
+                (#"\*\*(?=\S)(.+?)(?<=\S)\*\*"#, "<b>$1</b>"),
+                (#"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)"#, "<b>$1</b>"),
+                (#"~~(?=\S)(.+?)(?<=\S)~~"#, "<strike>$1</strike>"),
+                (#"(?<![\w*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![\w*])"#, "<i>$1</i>"),
+                (#"(?<!\w)_(?=[^\s_])(.+?)(?<=[^\s_])_(?!\w)"#, "<i>$1</i>"),
+            ] { t = t.replacingOccurrences(of: pattern, with: template, options: .regularExpression) }
+            return t
+        }.joined()
+    }
+
     // Length of a list paragraph's leading "\t•\t" / "\t12.\t" marker (0 if it has none).
     static func markerLength(_ ns: NSString, _ p: NSRange) -> Int {
         guard p.length > 1, ns.character(at: p.location) == 9 else { return 0 }

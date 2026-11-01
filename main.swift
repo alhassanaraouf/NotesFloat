@@ -123,9 +123,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     // Shortcut-only: editing keys a menu bar would normally provide, plus aliases.
     var hiddenCmds: [Cmd] {
-        [("⌘x", "cut:"), ("⌘c", "copy:"), ("⌘v", "pasteAsPlainText:"), ("⌘a", "selectAll:"), ("⌘z", "undo:"), ("⇧⌘z", "redo:")]
+        [("⌘x", "cut:"), ("⌘c", "copy:"), ("⌥⌘v", "pasteAsPlainText:"), ("⌘a", "selectAll:"), ("⌘z", "undo:"), ("⇧⌘z", "redo:")]
             .map { k, sel in Cmd(title: "", icon: "", key: k) { NSApp.sendAction(Selector(sel), to: nil, from: nil) } }
-        + [Cmd(title: "", icon: "", key: "⌘k") { self.actions() },
+        + [Cmd(title: "", icon: "", key: "⌘v") { self.paste() },
+           Cmd(title: "", icon: "", key: "⌘k") { self.actions() },
            Cmd(title: "", icon: "", key: "⌥⌘f") { self.browse() },
            Cmd(title: "", icon: "", key: "⇧⌘=") { self.zoom(1) },
            Cmd(title: "", icon: "", key: "⌘w") { self.hide() },
@@ -299,7 +300,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
                 + (f.contains(.command) ? "⌘" : "") + key
             guard let c = (hiddenCmds + formatCmds + sections.flatMap(\.1)).first(where: { $0.key == k }) else { return e }
             if c.enabled {
-                let editKey = ["⌘x", "⌘c", "⌘v", "⌘a", "⌘z", "⇧⌘z"].contains(k)
+                let editKey = ["⌘x", "⌘c", "⌘v", "⌥⌘v", "⌘a", "⌘z", "⇧⌘z"].contains(k)
                 if popupOpen && !editKey { closeSwitcher() }
                 c.run()
             } else {
@@ -921,12 +922,34 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     // MARK: editing (behaviour lives in Editor; the app only gates it on `editable`)
 
     func textView(_ tv: NSTextView, shouldChangeTextIn r: NSRange, replacementString s: String?) -> Bool {
-        guard editable, let t = editor.listTrigger(r, s) else { return true }
-        DispatchQueue.main.async { [self] in editor.startList(replacing: t.prefix, t.format) }  // after this keystroke settles
-        return false
+        guard editable else { return true }
+        if let t = editor.blockTrigger(r, s) {  // "- " "1. " "# " … at a line start
+            DispatchQueue.main.async { [self] in editor.startBlock(replacing: t.prefix, t.block) }  // after this keystroke settles
+            return false
+        }
+        if let s, Editor.inlineTriggers.contains(s), r.length == 0 {  // a typed closing marker: **…** _…_ `…` [..](..)
+            DispatchQueue.main.async { [self] in editor.inlineShortcut() }  // runs once the character is in
+        }
+        return true
     }
 
     func textView(_ tv: NSTextView, doCommandBy sel: Selector) -> Bool { editable && editor.command(sel) }
+
+    // ⌘V: Markdown on the clipboard becomes formatted text; anything else (and ⌥⌘V) pastes as plain text.
+    func paste() {
+        guard panel.firstResponder === text, editable, let md = NSPasteboard.general.string(forType: .string), Notes.looksLikeMarkdown(md) else {
+            NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: nil, from: nil)
+            return
+        }
+        let formatted = Notes.attributed(Notes.markdownHTML(md))
+        let r = text.selectedRange()
+        guard text.shouldChangeText(in: r, replacementString: formatted.string) else { return }
+        text.textStorage!.replaceCharacters(in: r, with: formatted)
+        text.didChangeText()
+        text.setSelectedRange(NSRange(location: r.location + formatted.length, length: 0))
+        text.scrollRangeToVisible(text.selectedRange())
+        toast.show("Pasted Markdown as formatting · ⌥⌘V pastes plain", "text.badge.checkmark")
+    }
 
     func trait(_ t: NSFontTraitMask) { if editable { editor.trait(t) } }
     func toggle(_ key: NSAttributedString.Key) { if editable { editor.toggle(key) } }

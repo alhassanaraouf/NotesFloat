@@ -21,6 +21,8 @@ and saves your notes through Apple Notes.
 - **Apple Notes formatting**: Title, Heading, Subheading, Body, Monostyled, bold, italic, underline,
   strikethrough, bulleted, dashed and numbered lists, nested lists, and links. It uses the same shortcuts as
   Apple Notes, and lists start automatically when you type `- `, `* ` or `1. `.
+- **Markdown**: type `# ` / `## ` / `### `, `**bold**`, `_italic_`, `~~strike~~`, `` `code` ``, `[text](url)` or
+  ```` ``` ```` and it turns into Apple Notes formatting; ⌘V converts copied Markdown, ⌥⌘V pastes plain text.
 - **Stays in sync**: saves as you type and picks up edits made in Apple Notes or on your other devices.
 - **Notes management**: pin, duplicate, move to a folder, delete (to Recently Deleted), copy as
   Markdown/text/HTML, export to Markdown/text/PDF, and copy a `notesfloat://` link.
@@ -67,6 +69,7 @@ All edits still go through Apple Notes itself.
 | **⌃⌥N** | Show / hide (configurable) |
 | **⌃⌥⇧N** | Quick capture (configurable) |
 | **⌘K** | Actions |
+| **⌘V** / **⌥⌘V** | Paste (Markdown becomes formatting) / paste as plain text |
 | **⌘P** or **⌥⌘F** | Browse and search notes |
 | **⌘N** / **⌘D** | New note / duplicate note |
 | **⇧⌘P** | Pin note |

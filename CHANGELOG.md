@@ -6,6 +6,15 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+### Added
+- **Markdown shortcuts while typing:** `# `, `## `, `### ` make Title, Heading and Subheading; `**bold**`,
+  `_italic_`, `~~strike~~`, `` `code` `` and `[text](url)` turn into formatting when you type the closing marker
+  (⌘Z brings the markers back); ```` ``` ```` then ↩ starts a Monostyled paragraph. `snake_case`, `2*3*4` and
+  `#tags` stay as typed.
+- **Paste Markdown:** ⌘V turns copied Markdown (from ChatGPT, GitHub, READMEs…) into Apple Notes formatting:
+  headings, bold, italic, code, links, and bulleted, numbered and nested lists. ⌥⌘V pastes plain text.
+  Task items become ☐ / ☑ bullets, since Apple Notes doesn't accept checklists from other apps.
+
 ## [0.3.3] - 2026-11-01
 
 ### Added

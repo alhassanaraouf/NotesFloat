@@ -40,23 +40,98 @@ final class Editor {
         return NSTextList(markerFormat: bullets.contains(fmt) ? bullets[(depth - 1) % 3] : fmt == .decimal ? Notes.numbered : fmt, options: 0)
     }
 
-    // "- " → dashed, "* " → bulleted, "1. " → numbered, typed at the start of a line: the typed prefix and list kind.
-    func listTrigger(_ r: NSRange, _ s: String?) -> (prefix: NSRange, format: NSTextList.MarkerFormat)? {
+    // MARK: Markdown shortcuts
+
+    enum Block { case list(NSTextList.MarkerFormat), heading(CGFloat) }
+
+    // A Markdown line prefix typed at the start of a line, completed by the space being typed:
+    // "- " "* " "1. " start lists; "# " "## " "### " make Title, Heading, Subheading.
+    func blockTrigger(_ r: NSRange, _ s: String?) -> (prefix: NSRange, block: Block)? {
         guard s == " ", r.length == 0 else { return nil }
         let ns = text.string as NSString
         let p = ns.paragraphRange(for: r)
         let typed = ns.substring(with: NSRange(location: p.location, length: r.location - p.location))
-        guard let fmt: NSTextList.MarkerFormat = ["-": .hyphen, "*": .disc, "•": .disc, "1.": .decimal, "1)": .decimal][typed],
-              listItem(at: r.location) == nil else { return nil }
-        return (NSRange(location: p.location, length: (typed as NSString).length), fmt)
+        let blocks: [String: Block] = ["-": .list(.hyphen), "*": .list(.disc), "•": .list(.disc), "1.": .list(.decimal), "1)": .list(.decimal),
+                                       "#": .heading(24), "##": .heading(20), "###": .heading(16)]
+        guard let b = blocks[typed], listItem(at: r.location) == nil else { return nil }
+        return (NSRange(location: p.location, length: (typed as NSString).length), b)
     }
 
-    func startList(replacing prefix: NSRange, _ fmt: NSTextList.MarkerFormat) {
+    func startBlock(replacing prefix: NSRange, _ b: Block) {
         guard text.shouldChangeText(in: prefix, replacementString: "") else { return }
         storage.replaceCharacters(in: prefix, with: "")
         text.didChangeText()
         text.setSelectedRange(NSRange(location: prefix.location, length: 0))
-        list(fmt)
+        switch b {
+        case .list(let f): list(f)
+        case .heading(let size): block(size, bold: true)
+        }
+    }
+
+    static let inlineTriggers: Set<String> = ["*", "_", "~", "`", ")"]
+    private static let lead = #"(?:^|(?<=[\s(\[{"'“‘]))"#  // a marker opens only at a word boundary (keeps snake_case, 2*3*4)
+    private static let inlineRules: [(kind: String, re: NSRegularExpression)] = [
+        ("link", #"\[([^\]\n]+)\]\(((?:https?://|mailto:)[^\s)]+)\)$"#),
+        ("bold", lead + #"\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*$"#),
+        ("bold", lead + #"__(?=\S)([^_\n]+?)(?<=\S)__$"#),
+        ("strike", lead + #"~~(?=\S)([^~\n]+?)(?<=\S)~~$"#),
+        ("code", #"`([^`\n]+)`$"#),
+        ("italic", lead + #"\*(?=[^\s*])([^*\n]+?)(?<=[^\s*])\*$"#),
+        ("italic", lead + #"_(?=[^\s_])([^_\n]+?)(?<=[^\s_])_$"#),
+    ].map { ($0.0, try! NSRegularExpression(pattern: $0.1)) }
+
+    // Right after a closing marker is typed: **bold**, _italic_, ~~strike~~, `code`, [text](url) become formatting
+    // and the markers go. Its own undo step, so ⌘Z brings back the literal Markdown. Literal inside code.
+    @discardableResult
+    func inlineShortcut() -> Bool {
+        let caret = text.selectedRange()
+        guard caret.length == 0, caret.location > 0 else { return false }
+        let ns = text.string as NSString
+        let p = ns.paragraphRange(for: NSRange(location: caret.location - 1, length: 0))
+        let start = p.location + Notes.markerLength(ns, p)
+        guard caret.location > start, !((storage.attribute(.font, at: caret.location - 1, effectiveRange: nil) as? NSFont)?.isFixedPitch ?? false)
+        else { return false }
+        let before = ns.substring(with: NSRange(location: start, length: caret.location - start))
+        for rule in Editor.inlineRules {
+            guard let m = rule.re.firstMatch(in: before, range: NSRange(location: 0, length: (before as NSString).length)) else { continue }
+            let opened = (before as NSString).substring(to: m.range.location).filter { $0 == "`" }.count
+            if rule.kind != "code", opened % 2 == 1 { continue }  // inside an unclosed `code span`: stay literal
+            let whole = NSRange(location: start + m.range.location, length: m.range.length)
+            let content = (before as NSString).substring(with: m.range(at: 1))
+            let plain = storage.attributes(at: start + m.range(at: 1).location, effectiveRange: nil)
+            var attrs = plain
+            let font = attrs[.font] as? NSFont ?? body
+            switch rule.kind {
+            case "bold": attrs[.font] = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask)
+            case "italic": attrs[.font] = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask)
+            case "strike": attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
+            case "code": attrs[.font] = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+            default: attrs[.link] = URL(string: (before as NSString).substring(with: m.range(at: 2)))
+            }
+            guard text.shouldChangeText(in: whole, replacementString: content) else { return false }
+            storage.replaceCharacters(in: whole, with: NSAttributedString(string: content, attributes: attrs))
+            text.didChangeText()
+            text.setSelectedRange(NSRange(location: whole.location + (content as NSString).length, length: 0))
+            text.typingAttributes = plain  // keep typing unformatted after the span
+            return true
+        }
+        return false
+    }
+
+    // ``` (optionally with a language, like ```swift) then ↩ turns the line into a Monostyled paragraph.
+    func codeFence(_ sel: Selector, _ sr: NSRange) -> Bool {
+        guard sel == #selector(NSResponder.insertNewline(_:)) else { return false }
+        let ns = text.string as NSString
+        let p = ns.paragraphRange(for: sr)
+        let line = ns.substring(with: p).trimmingCharacters(in: .newlines)
+        guard line.range(of: #"^```[A-Za-z0-9+#-]*$"#, options: .regularExpression) != nil else { return false }
+        let lineRange = NSRange(location: p.location, length: (line as NSString).length)
+        guard text.shouldChangeText(in: lineRange, replacementString: "") else { return false }
+        storage.replaceCharacters(in: lineRange, with: "")
+        text.didChangeText()
+        text.setSelectedRange(NSRange(location: p.location, length: 0))
+        block(13, bold: false, mono: true)
+        return true
     }
 
     // Toggles a list on the selected paragraphs (off if the first one already has this kind).
@@ -144,7 +219,7 @@ final class Editor {
     func command(_ sel: Selector) -> Bool {
         let sr = text.selectedRange()
         guard sr.length == 0 else { return false }
-        guard let li = listItem(at: sr.location) else { return headingReturn(sel, sr) }
+        guard let li = listItem(at: sr.location) else { return codeFence(sel, sr) || headingReturn(sel, sr) }
         let ns = text.string as NSString
         let content = ns.substring(with: NSRange(location: li.para.location + li.marker, length: li.para.length - li.marker))
             .trimmingCharacters(in: .newlines)
