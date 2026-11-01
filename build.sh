@@ -87,11 +87,10 @@ if [ -n "$KC" ]; then
     || { echo "error: signing with $IDENTITY failed" >&2; exit 1; }
   echo "signed: $IDENTITY"
 else
-  [ "$1" = "--package" ] && [ -n "$CI" ] && { echo "error: release builds must be signed (SIGNING_P12 missing)" >&2; exit 1; }
   codesign -s - --force --deep "$APP"  # ad-hoc fallback for contributors; macOS re-asks for permissions after rebuilds
   echo "warning: ad-hoc signed (no NotesFloat signing identity found)" >&2
 fi
-[ -n "$SIGNING_P12" ] && security delete-keychain "$KC"
+if [ -n "$SIGNING_P12" ]; then security delete-keychain "$KC"; fi  # release.yml requires the signing secrets
 "$APP/Contents/MacOS/NotesFloat" --test
 
 if [ "$1" = "--package" ]; then
