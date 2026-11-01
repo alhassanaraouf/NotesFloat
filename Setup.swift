@@ -80,6 +80,31 @@ final class Updates: NSObject, SPUStandardUserDriverDelegate {
     static var version: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?" }
 }
 
+// MARK: about
+
+// The standard About window (icon, name, version, copyright come from Info.plist) plus a tagline and links.
+enum About {
+    static func show() {
+        let center = NSMutableParagraphStyle()
+        center.alignment = .center
+        let small: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: center]
+        let credits = NSMutableAttributedString(string: "Your Apple Notes, floating above everything.\n\n", attributes: small)
+        let links = [("Website", "https://alhassan.raoufs.me/work/NotesFloat"), ("GitHub", "https://github.com/alhassanaraouf/NotesFloat"),
+                     ("What's New", "https://github.com/alhassanaraouf/NotesFloat/blob/main/CHANGELOG.md")]
+        for (i, (title, url)) in links.enumerated() {
+            if i > 0 { credits.append(NSAttributedString(string: "  ·  ", attributes: small)) }
+            credits.append(NSAttributedString(string: title, attributes: small.merging([.link: URL(string: url)!]) { $1 }))
+        }
+        credits.append(NSAttributedString(string: "\n\nApache License 2.0 · Updates by Sparkle", attributes: small))
+        NSApp.activate(ignoringOtherApps: true)
+        let before = Set(NSApp.windows.map(ObjectIdentifier.init))
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: credits, .applicationVersion: Updates.version, .version: ""])
+        panel = panel ?? NSApp.windows.first { !before.contains(ObjectIdentifier($0)) }  // the panel AppKit just created
+        panel?.level = .floating  // stay above the floating Settings window
+    }
+    private static weak var panel: NSWindow?
+}
+
 // MARK: shared controls
 
 // Click, then press a key combination; Esc cancels. Re-registers the global hotkey, restoring the old one if taken.
@@ -217,7 +242,8 @@ final class Settings: NSObject {
                 [label("Version:", 13), row([label(Updates.version, 13, .regular, .secondaryLabelColor),
                                               NSButton(title: "Check Now", target: self, action: #selector(checkNow))])],
             ]),
-            NSButton(title: "Show Welcome Guide…", target: self, action: #selector(welcome)),
+            row([NSButton(title: "About NotesFloat…", target: self, action: #selector(about)),
+                 NSButton(title: "Show Welcome Guide…", target: self, action: #selector(welcome))]),
         ])
         stack.orientation = .vertical
         stack.alignment = .leading
@@ -290,6 +316,7 @@ final class Settings: NSObject {
     @objc func allowAX() { Access.requestAccessibility() }
     @objc func checkNow() { Updates.shared.checkNow() }
     @objc func welcome() { window.close(); onWelcome() }
+    @objc func about() { About.show() }
 }
 
 // MARK: onboarding

@@ -6,7 +6,10 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-01
+
 ### Added
+- **About NotesFloat** in Settings and the menu bar menu: version, website, GitHub and what's new.
 - **Markdown shortcuts while typing:** `# `, `## `, `### ` make Title, Heading and Subheading; `**bold**`,
   `_italic_`, `~~strike~~`, `` `code` `` and `[text](url)` turn into formatting when you type the closing marker
   (⌘Z brings the markers back); ```` ``` ```` then ↩ starts a Monostyled paragraph. `snake_case`, `2*3*4` and
