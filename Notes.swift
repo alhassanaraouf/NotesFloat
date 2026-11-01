@@ -282,6 +282,55 @@ enum Notes {
 
     static var canReadDB: Bool { query("SELECT 1 FROM ZICCLOUDSYNCINGOBJECT LIMIT 1") { _ in } }
 
+    // MARK: raw Apple Events, safe off the main thread (NSAppleScript isn't), used for background saves
+
+    static func four(_ s: String) -> FourCharCode { s.utf8.reduce(0) { $0 << 8 | FourCharCode($1) } }
+
+    // Object specifier for `<property code> of note id "<id>"`.
+    static func noteProperty(_ id: String, _ code: String) -> NSAppleEventDescriptor {
+        func spec(_ want: FourCharCode, _ from: NSAppleEventDescriptor, _ form: DescType, _ data: NSAppleEventDescriptor) -> NSAppleEventDescriptor {
+            let d = NSAppleEventDescriptor.record().coerce(toDescriptorType: DescType(typeObjectSpecifier))!
+            d.setDescriptor(NSAppleEventDescriptor(typeCode: want), forKeyword: AEKeyword(keyAEDesiredClass))
+            d.setDescriptor(from, forKeyword: AEKeyword(keyAEContainer))
+            d.setDescriptor(NSAppleEventDescriptor(enumCode: form), forKeyword: AEKeyword(keyAEKeyForm))
+            d.setDescriptor(data, forKeyword: AEKeyword(keyAEKeyData))
+            return d
+        }
+        let note = spec(four("note"), .null(), DescType(formUniqueID), NSAppleEventDescriptor(string: id))
+        return spec(FourCharCode(cProperty), note, DescType(formPropertyID), NSAppleEventDescriptor(typeCode: four(code)))
+    }
+
+    // Sends get/set to Notes and returns the reply's result; nil on any send or Notes error.
+    static func send(_ eventID: UInt32, _ direct: NSAppleEventDescriptor, data: NSAppleEventDescriptor? = nil) -> NSAppleEventDescriptor? {
+        let e = NSAppleEventDescriptor(eventClass: AEEventClass(kAECoreSuite), eventID: AEEventID(eventID),
+                                       targetDescriptor: NSAppleEventDescriptor(bundleIdentifier: "com.apple.Notes"),
+                                       returnID: AEReturnID(kAutoGenerateReturnID), transactionID: AETransactionID(kAnyTransactionID))
+        e.setParam(direct, forKeyword: AEKeyword(keyDirectObject))
+        if let data { e.setParam(data, forKeyword: AEKeyword(keyAEData)) }
+        guard let reply = try? e.sendEvent(options: [.waitForReply], timeout: 15),
+              (reply.paramDescriptor(forKeyword: AEKeyword(keyErrorNumber))?.int32Value ?? 0) == 0 else { return nil }
+        return reply.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)) ?? .null()
+    }
+
+    static func eventModDate(_ id: String) -> Date? { send(kAEGetData, noteProperty(id, "asmo"))?.dateValue }
+    static func eventSave(_ id: String, _ html: String) -> Bool { send(kAESetData, noteProperty(id, "body"), data: NSAppleEventDescriptor(string: html)) != nil }
+
+    // AppleScript's `container of note` fails (-1728): use the database when readable, else search the folders.
+    static func folderID(of id: String) -> String? {
+        if let pk = pk(id), let uuid = storeUUID {
+            var folder: Int64?
+            _ = query("SELECT ZFOLDER FROM ZICCLOUDSYNCINGOBJECT WHERE Z_PK = \(pk)") {
+                if sqlite3_column_type($0, 0) != SQLITE_NULL { folder = sqlite3_column_int64($0, 0) }
+            }
+            if let folder { return "x-coredata://\(uuid)/ICFolder/p\(folder)" }
+        }
+        return tell("""
+            repeat with f in folders
+                if (id of notes of f) contains \(q(id)) then return id of f
+            end repeat
+            """)?.stringValue
+    }
+
     static func reveal(_ id: String) { tell("show note id \(q(id))\nactivate") }
 
     static let paragraph: NSParagraphStyle = {
@@ -302,13 +351,42 @@ enum Notes {
         let all = NSRange(location: 0, length: s.length)
         s.removeAttribute(.backgroundColor, range: all)
         s.addAttribute(.foregroundColor, value: Theme.current.text, range: all)  // theme color (dynamic for light/dark)
+        var numberedLists: [ObjectIdentifier: NSTextList] = [:]  // one replacement per imported list keeps items grouped
         s.enumerateAttribute(.paragraphStyle, in: all) { v, r, _ in  // display-only spacing; not serialized
             let ps = (v as? NSParagraphStyle ?? paragraph).mutableCopy() as! NSMutableParagraphStyle
             ps.lineHeightMultiple = paragraph.lineHeightMultiple
             ps.paragraphSpacing = paragraph.paragraphSpacing
+            ps.textLists = ps.textLists.map { l in  // AppKit numbers "1"; Apple Notes shows "1."
+                guard l.markerFormat == .decimal else { return l }
+                if let n = numberedLists[ObjectIdentifier(l)] { return n }
+                let n = NSTextList(markerFormat: numbered, options: 0)
+                numberedLists[ObjectIdentifier(l)] = n
+                return n
+            }
             s.addAttribute(.paragraphStyle, value: ps, range: r)
         }
+        for f in numberFixes(s).reversed() {
+            s.replaceCharacters(in: f.range, with: NSAttributedString(string: f.marker, attributes: s.attributes(at: f.range.location, effectiveRange: nil)))
+        }
         return s
+    }
+
+    static let numbered = NSTextList.MarkerFormat("{decimal}.")
+    static func isNumbered(_ l: NSTextList) -> Bool { l.markerFormat == numbered || l.markerFormat == .decimal }
+
+    // Numbered items whose "\t<n>.\t" marker is out of order, counting per list object (all items of one list share it).
+    static func numberFixes(_ s: NSAttributedString) -> [(range: NSRange, marker: String)] {
+        let ns = s.string as NSString
+        var counters: [ObjectIdentifier: Int] = [:], fixes: [(range: NSRange, marker: String)] = []
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byParagraphs, .substringNotRequired]) { _, p, _, _ in
+            guard p.location < s.length, let l = (s.attribute(.paragraphStyle, at: p.location, effectiveRange: nil) as? NSParagraphStyle)?.textLists.last,
+                  isNumbered(l) else { return }
+            let n = (counters[ObjectIdentifier(l)] ?? 0) + 1
+            counters[ObjectIdentifier(l)] = n
+            let m = markerLength(ns, p), want = "\t\(l.marker(forItemNumber: n))\t"
+            if m > 0, ns.substring(with: NSRange(location: p.location, length: m)) != want { fixes.append((NSRange(location: p.location, length: m), want)) }
+        }
+        return fixes
     }
 
     // One entry per paragraph: block tag, enclosing list types (outer→inner), styled runs without list markers.
@@ -318,10 +396,10 @@ enum Notes {
         str.enumerateSubstrings(in: NSRange(location: 0, length: str.length), options: [.byParagraphs, .substringNotRequired]) { _, para, _, _ in
             var r = para
             let attrs = r.location < s.length ? s.attributes(at: r.location, effectiveRange: nil) : [:]
-            let lists = ((attrs[.paragraphStyle] as? NSParagraphStyle)?.textLists ?? []).map { $0.markerFormat == .decimal ? "ol" : "ul" }
-            if !lists.isEmpty, r.length > 1, str.character(at: r.location) == 9 {  // strip "\t•\t" marker
-                let tab = str.range(of: "\t", range: NSRange(location: r.location + 1, length: r.length - 1))
-                if tab.location != NSNotFound { r = NSRange(location: tab.location + 1, length: NSMaxRange(r) - tab.location - 1) }
+            let lists = ((attrs[.paragraphStyle] as? NSParagraphStyle)?.textLists ?? []).map { isNumbered($0) ? "ol" : "ul" }
+            if !lists.isEmpty {  // strip the "\t•\t" marker
+                let m = markerLength(str, r)
+                r = NSRange(location: r.location + m, length: r.length - m)
             }
             let size = (attrs[.font] as? NSFont)?.pointSize ?? 14
             let tag = !lists.isEmpty ? "li" : size >= 22 ? "h1" : size >= 18 ? "h2" : size >= 15.5 ? "h3" : "div"
@@ -330,6 +408,13 @@ enum Notes {
             out.append(Block(tag: tag, lists: lists, runs: runs))
         }
         return out
+    }
+
+    // Length of a list paragraph's leading "\t•\t" / "\t12.\t" marker (0 if it has none).
+    static func markerLength(_ ns: NSString, _ p: NSRange) -> Int {
+        guard p.length > 1, ns.character(at: p.location) == 9 else { return 0 }
+        let tab = ns.range(of: "\t", range: NSRange(location: p.location + 1, length: p.length - 1))
+        return tab.location == NSNotFound ? 0 : tab.location + 1 - p.location
     }
 
     static func inline(_ text: String, _ a: [NSAttributedString.Key: Any], tag: String, md: Bool) -> String {
@@ -380,4 +465,33 @@ enum Notes {
                 + b.runs.map(\.0).joined()
         }.joined(separator: "\n")
     }
+}
+
+// Saves on a background queue so typing never waits on Apple Notes (~40 ms per save). Each save first checks the
+// note wasn't changed elsewhere since our last load/save, then writes and records the new date. That state lives
+// only on the queue, so back-to-back saves never mistake each other for outside changes.
+final class Saver {
+    enum Result { case saved(Date), conflict, failed }
+    private let queue = DispatchQueue(label: "me.raoufs.alhassan.NotesFloat.save")
+    private var known: [String: Date] = [:]  // touched only on `queue`
+
+    func expect(_ id: String, _ date: Date) { queue.async { self.known[id] = date } }
+
+    func save(_ id: String, _ html: String, wait: Bool = false, done: @escaping (Result) -> Void) {
+        let job = {
+            let result: Result
+            if let expected = self.known[id], let now = Notes.eventModDate(id), now != expected {
+                result = .conflict
+            } else if Notes.eventSave(id, html), let date = Notes.eventModDate(id) {
+                self.known[id] = date
+                result = .saved(date)
+            } else {
+                result = .failed  // e.g. Notes isn't running: raw events can't launch it
+            }
+            DispatchQueue.main.async { done(result) }
+        }
+        wait ? queue.sync(execute: job) : queue.async(execute: job)
+    }
+
+    func flush() { queue.sync {} }
 }

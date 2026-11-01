@@ -21,9 +21,15 @@ jobs:
       - name: Build, self-test, package and sign the update
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          SIGNING_P12: ${{ secrets.SIGNING_P12 }}
+          SIGNING_P12_PASSWORD: ${{ secrets.SIGNING_P12_PASSWORD }}
         run: |
           if [ -z "$SPARKLE_ED_PRIVATE_KEY" ]; then
             echo "::error::SPARKLE_ED_PRIVATE_KEY secret is missing; installed copies would never be offered this update."
+            exit 1
+          fi
+          if [ -z "$SIGNING_P12" ] || [ -z "$SIGNING_P12_PASSWORD" ]; then
+            echo "::error::SIGNING_P12 / SIGNING_P12_PASSWORD secrets are missing; an ad-hoc build would reset users' permissions."
             exit 1
           fi
           VERSION="${GITHUB_REF_NAME#v}" ./build.sh --package

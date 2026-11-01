@@ -53,12 +53,45 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleURLName</key><string>NotesFloat link</string>
     <key>CFBundleURLSchemes</key><array><string>notesfloat</string></array>
   </dict></array>
+  <key>NSServices</key><array><dict>
+    <key>NSMenuItem</key><dict><key>default</key><string>Add to NotesFloat</string></dict>
+    <key>NSMessage</key><string>captureService</string>
+    <key>NSPortName</key><string>NotesFloat</string>
+    <key>NSSendTypes</key><array><string>public.utf8-plain-text</string><string>NSStringPboardType</string></array>
+  </dict></array>
   <key>SUFeedURL</key><string>https://github.com/$REPO/releases/latest/download/appcast.xml</string>
   <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
   <key>SUEnableAutomaticChecks</key><true/>
 </dict></plist>
 PLIST
-codesign -s - --force --deep "$APP"  # ad-hoc: required to run on Apple silicon; not a Developer ID signature
+# Sign with the stable "NotesFloat Self-Signed" identity so every build has the same designated requirement and macOS
+# keeps the app's permissions across updates (ad-hoc signatures change per build, which resets them).
+#   CI: base64 .p12 in $SIGNING_P12 + $SIGNING_P12_PASSWORD, loaded into a throwaway keychain.
+#   Local: ~/Library/Keychains/NotesFloat-signing.keychain-db, unlocked from 1Password after a restart.
+# Not an Apple Developer ID, so Gatekeeper still asks on first open.
+IDENTITY="NotesFloat Self-Signed"
+KC=""
+if [ -n "$SIGNING_P12" ]; then
+  KC="$PWD/build/signing.keychain-db"; KCPW=$(uuidgen)
+  security create-keychain -p "$KCPW" "$KC" && security set-keychain-settings "$KC" && security unlock-keychain -p "$KCPW" "$KC"
+  (umask 077; printf '%s' "$SIGNING_P12" | base64 -d > build/signing.p12)
+  security import build/signing.p12 -k "$KC" -P "$SIGNING_P12_PASSWORD" -T /usr/bin/codesign >/dev/null
+  rm -P build/signing.p12
+  security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
+elif [ -f "$HOME/Library/Keychains/NotesFloat-signing.keychain-db" ]; then
+  KC="$HOME/Library/Keychains/NotesFloat-signing.keychain-db"
+fi
+if [ -n "$KC" ]; then
+  sign() { codesign --force --deep --keychain "$KC" -s "$IDENTITY" "$APP" 2>/dev/null; }
+  sign || { security unlock-keychain -p "$(op read 'op://Private/6eqzyc4il27hyqm4mj4gndc4lu/keychainpassword')" "$KC" && sign; } \
+    || { echo "error: signing with $IDENTITY failed" >&2; exit 1; }
+  echo "signed: $IDENTITY"
+else
+  [ "$1" = "--package" ] && [ -n "$CI" ] && { echo "error: release builds must be signed (SIGNING_P12 missing)" >&2; exit 1; }
+  codesign -s - --force --deep "$APP"  # ad-hoc fallback for contributors; macOS re-asks for permissions after rebuilds
+  echo "warning: ad-hoc signed (no NotesFloat signing identity found)" >&2
+fi
+[ -n "$SIGNING_P12" ] && security delete-keychain "$KC"
 "$APP/Contents/MacOS/NotesFloat" --test
 
 if [ "$1" = "--package" ]; then

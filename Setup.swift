@@ -38,6 +38,22 @@ enum Access {
 
     static var fullDisk: Bool { Notes.canReadDB }
 
+    // Optional: lets quick capture read the selected text in other apps (otherwise it uses the clipboard).
+    static var accessibility: Bool { AXIsProcessTrusted() }
+    static func requestAccessibility() {
+        _ = AXIsProcessTrustedWithOptions([kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary)
+    }
+
+    // The selected text in the frontmost app, via Accessibility; nil without permission or selection.
+    static func selectedText() -> String? {
+        guard accessibility else { return nil }
+        var focused: CFTypeRef?, selected: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let el = focused, CFGetTypeID(el) == AXUIElementGetTypeID(),
+              AXUIElementCopyAttributeValue(el as! AXUIElement, kAXSelectedTextAttribute as CFString, &selected) == .success else { return nil }
+        return (selected as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     static func openPane(_ pane: String) {  // "Privacy_Automation", "Privacy_AllFiles"
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?\(pane)")!)
     }
@@ -69,16 +85,19 @@ final class Updates: NSObject, SPUStandardUserDriverDelegate {
 // Click, then press a key combination; Esc cancels. Re-registers the global hotkey, restoring the old one if taken.
 final class ShortcutButton: NSButton {
     var monitor: Any?
+    var kind = HotKey.Kind.toggle
+    var p: String { kind.prefix }
 
-    convenience init() {
+    convenience init(_ kind: HotKey.Kind = .toggle) {
         self.init(title: "", target: nil, action: nil)
+        self.kind = kind
         bezelStyle = .rounded
         target = self
         action = #selector(record)
         refresh()
     }
 
-    func refresh() { title = UserDefaults.standard.string(forKey: "hkLabel") ?? "" }
+    func refresh() { title = UserDefaults.standard.string(forKey: p + "Label") ?? "" }
 
     @objc func record() {
         guard monitor == nil else { return }
@@ -88,7 +107,7 @@ final class ShortcutButton: NSButton {
             if e.keyCode != 53 {
                 guard !f.isDisjoint(with: [.command, .option, .control]) else { NSSound.beep(); return nil }
                 let d = UserDefaults.standard
-                let old = (d.integer(forKey: "hkCode"), d.integer(forKey: "hkMods"), d.string(forKey: "hkLabel"))
+                let old = (d.integer(forKey: p + "Code"), d.integer(forKey: p + "Mods"), d.string(forKey: p + "Label"))
                 var mods = 0
                 if f.contains(.command) { mods |= cmdKey }
                 if f.contains(.option) { mods |= optionKey }
@@ -97,10 +116,10 @@ final class ShortcutButton: NSButton {
                 let key = e.characters(byApplyingModifiers: [])?.uppercased() ?? ""
                 let label = (f.contains(.control) ? "⌃" : "") + (f.contains(.option) ? "⌥" : "") + (f.contains(.shift) ? "⇧" : "")
                     + (f.contains(.command) ? "⌘" : "") + (key == " " ? "Space" : key.isEmpty ? "#\(e.keyCode)" : key)
-                d.set(Int(e.keyCode), forKey: "hkCode"); d.set(mods, forKey: "hkMods"); d.set(label, forKey: "hkLabel")
-                if !HotKey.register() {  // taken by the system or another app: restore
-                    d.set(old.0, forKey: "hkCode"); d.set(old.1, forKey: "hkMods"); d.set(old.2, forKey: "hkLabel")
-                    HotKey.register()
+                d.set(Int(e.keyCode), forKey: p + "Code"); d.set(mods, forKey: p + "Mods"); d.set(label, forKey: p + "Label")
+                if !HotKey.register(kind) {  // taken by the system or another app: restore
+                    d.set(old.0, forKey: p + "Code"); d.set(old.1, forKey: p + "Mods"); d.set(old.2, forKey: p + "Label")
+                    HotKey.register(kind)
                     NSSound.beep()
                 }
             }
@@ -152,8 +171,11 @@ final class Settings: NSObject {
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 10), styleMask: [.titled, .closable],
                           backing: .buffered, defer: false)
     let shortcut = ShortcutButton()
+    let capture = ShortcutButton(.capture)
     let login = NSButton(checkboxWithTitle: "Launch at login", target: nil, action: nil)
     let theme = NSPopUpButton()
+    let axStatus = label("", 13)
+    lazy var axButton = NSButton(title: "Allow…", target: self, action: #selector(allowAX))
     let notesStatus = label("", 13), diskStatus = label("", 13)
     lazy var notesButton = NSButton(title: "Allow…", target: self, action: #selector(allowNotes))
     lazy var diskButton = NSButton(title: "Open Privacy Settings…", target: self, action: #selector(openDisk))
@@ -176,12 +198,19 @@ final class Settings: NSObject {
         for b in [autoCheck, autoInstall] { b.target = self; b.action = #selector(toggleUpdates) }
 
         let stack = NSStackView(views: [
-            section("General", [[label("Shortcut:", 13), shortcut], [NSGridCell.emptyContentView, login]]),
+            section("General", [
+                [label("Show / hide:", 13), shortcut],
+                [label("Quick capture:", 13), capture],
+                [NSGridCell.emptyContentView, wrapping("Adds the selected text (with Accessibility) or the clipboard to your capture note, without opening the window. Choose the note with ⌘K › Capture Into This Note. Also in any app's Services menu as “Add to NotesFloat”.", 11, width: 300)],
+                [NSGridCell.emptyContentView, login],
+            ]),
             section("Appearance", [[label("Theme:", 13), theme]]),
             section("Permissions", [
                 [label("Apple Notes:", 13), row([notesStatus, notesButton])],
                 [label("Full Disk Access:", 13), row([diskStatus, diskButton])],
                 [NSGridCell.emptyContentView, wrapping("Optional. Lets NotesFloat find checklists exactly, show ☐/☑, search faster, and show your Apple Notes pins. Read-only.", 11, width: 300)],
+                [label("Accessibility:", 13), row([axStatus, axButton])],
+                [NSGridCell.emptyContentView, wrapping("Optional. Lets quick capture grab the text selected in other apps.", 11, width: 300)],
             ]),
             section("Updates", [
                 [NSGridCell.emptyContentView, autoCheck], [NSGridCell.emptyContentView, autoInstall],
@@ -225,6 +254,10 @@ final class Settings: NSObject {
 
     func refresh() {
         shortcut.refresh()
+        capture.refresh()
+        axStatus.stringValue = Access.accessibility ? "✓ Allowed" : "Not allowed"
+        axStatus.textColor = Access.accessibility ? .systemGreen : .secondaryLabelColor
+        axButton.isHidden = Access.accessibility
         login.state = LoginItem.on ? .on : .off
         theme.selectItem(withTitle: Theme.current.name)
         let n = statusText(Access.notes())
@@ -254,6 +287,7 @@ final class Settings: NSObject {
         Access.notes() == .denied ? Access.openPane("Privacy_Automation") : Access.requestNotes { [weak self] _ in self?.refresh() }
     }
     @objc func openDisk() { Access.openPane("Privacy_AllFiles") }
+    @objc func allowAX() { Access.requestAccessibility() }
     @objc func checkNow() { Updates.shared.checkNow() }
     @objc func welcome() { window.close(); onWelcome() }
 }

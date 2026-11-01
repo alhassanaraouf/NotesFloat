@@ -36,13 +36,21 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     var hiding = false
     var noteCache: [NoteRef] = []
     var browseToken: UUID?
-    var dirty = false  // typed since last load/save
+    var dirty = false  // typed since the last save was queued
+    var inFlight = 0  // saves queued but not finished
+    let saver = Saver()
+    let hud = HUD()
     var checklist: Bool?  // nil = couldn't read Notes' database
     lazy var shareButton = button("eye", "") { self.toggleSharing() }
     let toolbar = NSStackView()
     let formatBar = NSStackView()
     let body = NSFont.systemFont(ofSize: 14)
     let d = UserDefaults.standard
+    lazy var editor: Editor = {
+        let e = Editor(text)
+        e.textColor = { Theme.current.text }
+        return e
+    }()
 
     var cur: (id: String, date: Date)?
     var name = ""
@@ -67,6 +75,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
              Cmd(title: "Duplicate Note", icon: "plus.square.on.square", key: "⌘d", enabled: cur != nil && !hard) { self.duplicate() },
              Cmd(title: pinned ? "Unpin Note" : "Pin Note", icon: pinned ? "pin.slash" : "pin", key: "⇧⌘p", enabled: cur != nil) { self.togglePin() },
              Cmd(title: "Browse Notes", icon: "rectangle.stack", key: "⌘p") { self.browse() },
+             Cmd(title: "Capture Into This Note", icon: "tray.and.arrow.down", key: "", enabled: cur != nil) { self.setCaptureNote() },
              Cmd(title: "Reload from Apple Notes", icon: "arrow.clockwise", key: "⌘r", enabled: cur != nil) { self.reload() },
              Cmd(title: "Go Back", icon: "arrow.backward.circle", key: "⌘[", enabled: !back.isEmpty) { self.go(-1) },
              Cmd(title: "Go Forward", icon: "arrow.forward.circle", key: "⌘]", enabled: !fwd.isEmpty) { self.go(1) }]),
@@ -183,6 +192,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         titleLabel.alignment = .center
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         let left = button("sidebar.left", "Browse Notes  ⌘P") { self.browse() }
+        shareButton.setAccessibilityLabel("Hidden from screen sharing")
         let right = NSStackView(views: [button("square.and.pencil", "New Note  ⌘N") { self.newNote() },
                                         button("ellipsis.circle", "Actions  ⌘K") { self.actions() }])
         right.spacing = 2
@@ -333,7 +343,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         menu.addItem(withTitle: "Quit NotesFloat", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
         status.menu = menu
 
-        HotKey.register()
+        HotKey.register(.toggle)
+        HotKey.register(.capture)
+        NSApp.servicesProvider = self  // Services menu: "Add to NotesFloat"
+        NSUpdateDynamicServices()
         // Pick up edits made in Apple Notes: on focus, and every few seconds while visible.
         NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: panel, queue: .main) { [unowned self] _ in
             syncFromNotes(force: true)
@@ -471,7 +484,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             return (notes.filter { p.contains($0.id) } + notes.filter { !p.contains($0.id) }).map { n in
                 Item(title: n.name,
                      subtitle: (n.id == current ? "Open now  ·  " : "") + "\(n.folder)  ·  \(rel.localizedString(for: n.date, relativeTo: Date()))",
-                     icon: p.contains(n.id) ? "pin.fill" : "note.text", body: n.text) { self.open(n.id) }
+                     icon: p.contains(n.id) ? "pin.fill" : "note.text", body: n.text) {
+                    let query = self.switcher.field.stringValue
+                    if self.open(n.id) { self.jump(to: query) }
+                }
             }
         }
         if noteCache.isEmpty { noteCache = Notes.list() }
@@ -524,19 +540,14 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     @discardableResult
     func open(_ id: String, selectTitle: Bool = false, record: Bool = true) -> Bool {
-        save()
+        save(wait: true)  // never load while our own write to it may still be in flight
         guard let n = Notes.load(id) else { return false }
+        saver.expect(id, n.date)
         if record, let c = cur, c.id != id { back.append(c.id); fwd = [] }
         d.set(id, forKey: "noteID")
         cur = (id, n.date)
         name = n.name
-        hard = n.locked || n.attachments > 0
-            || n.html.range(of: "<(img|table|object)", options: [.regularExpression, .caseInsensitive]) != nil
-        // Checklists come from Notes' database when we can read it; otherwise any list might be one.
-        checklist = Notes.hasChecklist(id, modified: n.date)
-        let listRisk = checklist ?? (n.html.range(of: "<ul", options: .caseInsensitive) != nil)
-        soft = !(d.stringArray(forKey: "unlocked") ?? []).contains(id) && !wroteLast(id, n.date)
-            && (listRisk || n.html.range(of: #"class=|color[:=]|(^|[\s>])#\w"#, options: .regularExpression) != nil)
+        (hard, soft, checklist) = risk(n, id)
         text.textStorage!.setAttributedString(n.locked
             ? NSAttributedString(string: "🔒 This note is locked. ⌘O opens it in Notes.", attributes: [.font: body, .foregroundColor: Theme.current.text])
             : Notes.attributed(n.html))
@@ -549,6 +560,36 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         let firstLine = (text.string as NSString).range(of: "\n").location
         text.setSelectedRange(NSRange(location: 0, length: selectTitle ? (firstLine == NSNotFound ? (text.string as NSString).length : firstLine) : 0))
         return true
+    }
+
+    // What this editor can't safely write back. hard: attachments/tables/images/locked (never write);
+    // soft: may hold checklists, tags or colors (write only after ⌘E). Checklists come from Notes' database when
+    // readable; otherwise any list might be one.
+    func risk(_ n: NoteBody, _ id: String) -> (hard: Bool, soft: Bool, checklist: Bool?) {
+        let hard = n.locked || n.attachments > 0
+            || n.html.range(of: "<(img|table|object)", options: [.regularExpression, .caseInsensitive]) != nil
+        let checklist = Notes.hasChecklist(id, modified: n.date)
+        let listRisk = checklist ?? (n.html.range(of: "<ul", options: .caseInsensitive) != nil)
+        let soft = !(d.stringArray(forKey: "unlocked") ?? []).contains(id) && !wroteLast(id, n.date)
+            && (listRisk || n.html.range(of: #"class=|color[:=]|(^|[\s>])#\w"#, options: .regularExpression) != nil)
+        return (hard, soft, checklist)
+    }
+
+    // Opened from a content search: put the caret at the first match and flash it, like Spotlight.
+    // Caret only, no selection, so typing straight away can't overwrite the match.
+    func jump(to query: String) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return }
+        let ns = text.string as NSString, opts: NSString.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
+        let titleEnd = ns.range(of: "\n").location
+        var r = ns.range(of: q, options: opts)
+        if r.location == NSNotFound, let w = q.split(separator: " ").map(String.init).max(by: { $0.count < $1.count }) { r = ns.range(of: w, options: opts) }
+        guard r.location != NSNotFound, titleEnd != NSNotFound, r.location > titleEnd else { return }  // title matches need no jump
+        DispatchQueue.main.async { [self] in
+            text.setSelectedRange(NSRange(location: r.location, length: 0))
+            text.scrollRangeToVisible(r)
+            text.showFindIndicator(for: r)
+        }
     }
 
     func openLast() {
@@ -587,6 +628,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func deleteNote() {  // goes to Notes' Recently Deleted, recoverable for 30 days
         guard let c = cur else { return }
+        let folder = Notes.folderID(of: c.id), title = name
         timer?.invalidate()
         cur = nil
         d.removeObject(forKey: "noteID")
@@ -594,7 +636,12 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         back.removeAll { $0 == c.id }
         noteCache.removeAll { $0.id == c.id }
         openLast()
-        toast.show("Moved to Recently Deleted", "trash.fill", .systemRed)
+        toast.show("Moved to Recently Deleted", "trash.fill", .systemRed, action: folder.map { f in ("Undo", { [unowned self] in
+            guard Notes.move(c.id, to: f), open(c.id) else {
+                return toast.show("Couldn't restore “\(title)” — it's in Recently Deleted", "exclamationmark.triangle.fill", .systemRed)
+            }
+            toast.show("Restored “\(title)”", "arrow.uturn.backward")
+        }) })
     }
 
     func go(_ dir: Int) {
@@ -727,12 +774,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byParagraphs, .substringNotRequired]) { _, p, _, _ in
             guard p.location < st.length,
                   (st.attribute(.paragraphStyle, at: p.location, effectiveRange: nil) as? NSParagraphStyle)?.textLists.isEmpty == false else { return }
-            var m = NSRange(location: p.location, length: 0)
-            if p.length > 1, ns.character(at: p.location) == 9 {
-                let tab = ns.range(of: "\t", range: NSRange(location: p.location + 1, length: p.length - 1))
-                if tab.location != NSNotFound { m.length = tab.location + 1 - p.location }
-            }
-            markers.append(m)
+            markers.append(NSRange(location: p.location, length: Notes.markerLength(ns, p)))
         }
         guard markers.count == paras.count else { return }  // layouts disagree: keep plain bullets rather than guess
         for (m, p) in zip(markers, paras).reversed() where p.style == 103 && m.length > 0 {
@@ -754,7 +796,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func reload() {
         guard let c = cur else { return }
-        save()  // if Notes changed meanwhile, save() already took Notes' version
+        save(wait: true)
         reopenInPlace(c.id)
         toast.show("Reloaded from Apple Notes", "arrow.clockwise")
     }
@@ -763,7 +805,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     // ponytail: edits Notes hasn't written to disk yet wait for the next write; focusing the window (force) asks anyway.
     var lastPolledDB: Double?
     func syncFromNotes(force: Bool = false) {
-        guard panel.isVisible, !popupOpen, !dirty, let c = cur else { return }
+        guard panel.isVisible, !popupOpen, !dirty, inFlight == 0, let c = cur else { return }
         if !force, let db = Notes.dbModDate(c.id) {
             if db == lastPolledDB { return }
             lastPolledDB = db
@@ -775,159 +817,121 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         toast.show("Updated from Apple Notes", "arrow.triangle.2.circlepath")
     }
 
-    func save() {
+    // Queues a background save (see Saver). `wait` blocks until it's written: before loading a note, reloading, or quitting.
+    func save(wait: Bool = false) {
         timer?.invalidate()
-        guard let c = cur, !readOnly else { return }
+        guard let c = cur, !readOnly else { if wait { saver.flush() }; return }
         let html = Notes.html(text.attributedString())
-        guard html != lastHTML else { return }
-        if let d = Notes.modDate(c.id), d != c.date {
-            // ponytail: edited elsewhere since we loaded; Notes wins and unsaved local typing (<1s) is dropped.
-            cur = nil
-            open(c.id, record: false)
-            toast.show("Updated from Apple Notes", "arrow.triangle.2.circlepath")
-            return
-        }
-        guard Notes.save(c.id, html), let d = Notes.modDate(c.id) else {
-            return toast.show("Couldn't save — is Apple Notes running?", "exclamationmark.triangle.fill", .systemRed)
-        }
-        cur = (c.id, d)
+        guard html != lastHTML else { if wait { saver.flush() }; return }
         lastHTML = html
         dirty = false
-        if let i = noteCache.firstIndex(where: { $0.id == c.id }) {
-            noteCache[i] = NoteRef(id: c.id, name: name, folder: noteCache[i].folder, date: d)
+        inFlight += 1
+        saver.save(c.id, html, wait: wait) { [weak self] r in self?.saved(c.id, html, r) }
+    }
+
+    func saved(_ id: String, _ html: String, _ r: Saver.Result) {
+        inFlight -= 1
+        switch r {
+        case .saved(let date):
+            stored(id, date)
+        case .conflict:
+            // ponytail: edited elsewhere since we loaded; Notes wins and typing since the last save is dropped.
+            guard cur?.id == id else { return toast.show("A note changed in Apple Notes before it saved — kept that version", "arrow.triangle.2.circlepath", .systemOrange) }
+            cur = nil
+            open(id, record: false)
+            toast.show("Updated from Apple Notes", "arrow.triangle.2.circlepath")
+        case .failed:  // raw events can't start Notes; AppleScript can
+            if Notes.save(id, html), let date = Notes.modDate(id) {
+                saver.expect(id, date)
+                stored(id, date)
+            } else {
+                if cur?.id == id { lastHTML = "" }  // retry on the next save
+                toast.show("Couldn't save — is Apple Notes running?", "exclamationmark.triangle.fill", .systemRed)
+            }
         }
-        markWritten(c.id, d)
+    }
+
+    func stored(_ id: String, _ date: Date) {
+        markWritten(id, date)
+        if cur?.id == id { cur = (id, date) }
+        if let i = noteCache.firstIndex(where: { $0.id == id }) {
+            noteCache[i] = NoteRef(id: id, name: id == cur?.id ? name : noteCache[i].name, folder: noteCache[i].folder, date: date)
+        }
+    }
+
+    // MARK: quick capture
+
+    func setCaptureNote() {
+        guard let c = cur else { return }
+        d.set(c.id, forKey: "captureNoteID")
+        toast.show("Quick capture now adds to “\(name)”", "tray.and.arrow.down.fill")
+    }
+
+    func captureFromHotKey() { capture(Access.selectedText() ?? NSPasteboard.general.string(forType: .string)) }
+
+    @objc func captureService(_ pboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        capture(pboard.string(forType: .string))
+    }
+
+    // Appends text to the capture note (default: the open note) without showing the window.
+    func capture(_ raw: String?) {
+        let say = { [self] (m: String, s: String, t: NSColor) in panel.isVisible ? toast.show(m, s, t) : hud.show(m, s, t) }
+        guard let snippet = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !snippet.isEmpty else {
+            return say("Nothing to capture — select or copy some text", "text.badge.xmark", .systemOrange)
+        }
+        guard let id = d.string(forKey: "captureNoteID") ?? cur?.id ?? d.string(forKey: "noteID") else {
+            return say("Open a note first, then capture into it", "tray", .systemOrange)
+        }
+        if id == cur?.id, !readOnly {  // the open note: append in the editor (undoable), then save
+            let st = text.textStorage!
+            let add = (st.length > 0 && !st.string.hasSuffix("\n") ? "\n" : "") + snippet
+            let end = NSRange(location: st.length, length: 0)
+            guard text.shouldChangeText(in: end, replacementString: add) else { return }
+            st.replaceCharacters(in: end, with: NSAttributedString(string: add, attributes: [.font: body, .foregroundColor: Theme.current.text, .paragraphStyle: Notes.paragraph]))
+            text.didChangeText()
+            save()
+            return say("Added to “\(name)”", "tray.and.arrow.down.fill", .controlAccentColor)
+        }
+        guard let n = Notes.load(id) else {
+            d.removeObject(forKey: "captureNoteID")  // probably deleted
+            return say("Couldn't find the capture note — choose one with ⌘K", "exclamationmark.triangle.fill", .systemRed)
+        }
+        let r = risk(n, id)
+        guard !r.hard, !r.soft else { return say("Can't add to “\(n.name)”: it has content NotesFloat can't keep", "lock.fill", .systemOrange) }
+        let html = n.html + snippet.components(separatedBy: "\n").map { $0.isEmpty ? "<div><br></div>" : "<div>\(Notes.esc($0))</div>" }.joined()
+        saver.expect(id, n.date)
+        inFlight += 1
+        saver.save(id, html) { [weak self] result in
+            self?.saved(id, html, result)
+            if case .saved = result { say("Added to “\(n.name)”", "tray.and.arrow.down.fill", .controlAccentColor) }
+        }
     }
 
     func textDidChange(_ n: Notification) {
+        editor.renumber()  // keeps numbered lists 1, 2, 3 after any edit (no-op when nothing changed)
         dirty = true
         liveTitle()
         timer?.invalidate()
         timer = .scheduledTimer(withTimeInterval: 0.8, repeats: false) { [unowned self] _ in save() }
     }
 
-    func applicationWillTerminate(_ n: Notification) { save() }
+    func applicationWillTerminate(_ n: Notification) { save(wait: true) }
 
-    // MARK: Apple Notes-style list typing
+    // MARK: editing (behaviour lives in Editor; the app only gates it on `editable`)
 
-    // List paragraph at `loc`: its range, the length of its "\t•\t" marker, and its list.
-    func listItem(at loc: Int) -> (para: NSRange, marker: Int, list: NSTextList)? {
-        let ns = text.string as NSString, st = text.textStorage!
-        let p = ns.paragraphRange(for: NSRange(location: loc, length: 0))
-        guard p.location < st.length, let l = (st.attribute(.paragraphStyle, at: p.location, effectiveRange: nil) as? NSParagraphStyle)?.textLists.last
-        else { return nil }
-        var marker = 0
-        if p.length > 1, ns.character(at: p.location) == 9 {
-            let tab = ns.range(of: "\t", range: NSRange(location: p.location + 1, length: p.length - 1))
-            if tab.location != NSNotFound { marker = tab.location + 1 - p.location }
-        }
-        return (p, marker, l)
-    }
-
-    // "- " → dashed, "* " → bulleted, "1. " → numbered, at the start of a line.
     func textView(_ tv: NSTextView, shouldChangeTextIn r: NSRange, replacementString s: String?) -> Bool {
-        guard s == " ", r.length == 0, editable else { return true }
-        let ns = tv.string as NSString
-        let p = ns.paragraphRange(for: r)
-        let typed = ns.substring(with: NSRange(location: p.location, length: r.location - p.location))
-        guard let fmt: NSTextList.MarkerFormat = ["-": .hyphen, "*": .disc, "•": .disc, "1.": .decimal, "1)": .decimal][typed],
-              listItem(at: r.location) == nil else { return true }
-        DispatchQueue.main.async { [self] in
-            let trigger = NSRange(location: p.location, length: (typed as NSString).length)
-            guard text.shouldChangeText(in: trigger, replacementString: "") else { return }
-            text.textStorage!.replaceCharacters(in: trigger, with: "")
-            text.didChangeText()
-            text.setSelectedRange(NSRange(location: p.location, length: 0))
-            list(fmt)
-        }
+        guard editable, let t = editor.listTrigger(r, s) else { return true }
+        DispatchQueue.main.async { [self] in editor.startList(replacing: t.prefix, t.format) }  // after this keystroke settles
         return false
     }
 
-    // Same geometry and bullets AppKit's HTML import produces (36pt per level; • ◦ ▪), so typed and loaded lists match.
-    func indent(_ ps: NSMutableParagraphStyle, _ lists: [NSTextList]) {
-        let d = CGFloat(lists.count)
-        ps.textLists = lists
-        ps.firstLineHeadIndent = 0
-        ps.headIndent = 36 * d
-        ps.tabStops = d == 0 ? NSParagraphStyle.default.tabStops
-            : [NSTextTab(textAlignment: .left, location: 36 * d - 25), NSTextTab(textAlignment: .left, location: 36 * d)]
-    }
+    func textView(_ tv: NSTextView, doCommandBy sel: Selector) -> Bool { editable && editor.command(sel) }
 
-    func listLevel(_ fmt: NSTextList.MarkerFormat, depth: Int) -> NSTextList {
-        let bullets: [NSTextList.MarkerFormat] = [.disc, .circle, .square]
-        return NSTextList(markerFormat: bullets.contains(fmt) ? bullets[(depth - 1) % 3] : fmt, options: 0)
-    }
-
-    // Tab / ⇧Tab anywhere in a list item changes its nesting, like Apple Notes.
-    func nest(_ li: (para: NSRange, marker: Int, list: NSTextList), deeper: Bool) {
-        let st = text.textStorage!
-        let ps = (st.attribute(.paragraphStyle, at: li.para.location, effectiveRange: nil) as! NSParagraphStyle).mutableCopy() as! NSMutableParagraphStyle
-        var lists = ps.textLists
-        if deeper { guard lists.count < 6 else { return }; lists.append(listLevel(li.list.markerFormat, depth: lists.count + 1)) }
-        else { guard lists.count > 1 else { return }; lists.removeLast() }
-        indent(ps, lists)
-        let contentStart = li.para.location + li.marker
-        let content = st.attributedSubstring(from: NSRange(location: contentStart, length: NSMaxRange(li.para) - contentStart))
-        let marker = "\t\(lists.last!.marker(forItemNumber: 1))\t"
-        let out = NSMutableAttributedString(string: marker, attributes: content.length > 0 ? content.attributes(at: 0, effectiveRange: nil) : text.typingAttributes)
-        out.append(content)
-        out.addAttribute(.paragraphStyle, value: ps, range: NSRange(location: 0, length: out.length))
-        let caret = text.selectedRange().location - contentStart
-        guard text.shouldChangeText(in: li.para, replacementString: out.string) else { return }
-        st.replaceCharacters(in: li.para, with: out)
-        text.didChangeText()
-        text.setSelectedRange(NSRange(location: li.para.location + (marker as NSString).length + max(0, caret), length: 0))
-    }
-
-    // ↩ at the end of a Title/Heading/Subheading starts a Body line, like Apple Notes.
-    func headingReturn(_ tv: NSTextView, _ sel: Selector, _ sr: NSRange) -> Bool {
-        guard sel == #selector(NSResponder.insertNewline(_:)) else { return false }
-        let ns = tv.string as NSString
-        let p = ns.paragraphRange(for: sr)
-        let end = NSMaxRange(p) - (ns.substring(with: p).hasSuffix("\n") ? 1 : 0)
-        guard sr.location == end, p.length > 0, p.location < ns.length,
-              let f = tv.textStorage!.attribute(.font, at: p.location, effectiveRange: nil) as? NSFont,
-              f.pointSize >= 15.5, !f.isFixedPitch else { return false }
-        let bodyAttrs: [NSAttributedString.Key: Any] = [.font: body, .foregroundColor: Theme.current.text, .paragraphStyle: Notes.paragraph]
-        tv.insertText("\n", replacementRange: sr)  // terminates the heading paragraph
-        let next = NSRange(location: sr.location + 1, length: 1)  // old newline now ends the new empty line
-        let now = tv.string as NSString  // `ns` is a pre-insert snapshot
-        if NSMaxRange(next) <= now.length, now.character(at: next.location) == 10, tv.shouldChangeText(in: next, replacementString: nil) {
-            tv.textStorage!.setAttributes(bodyAttrs, range: next)
-            tv.didChangeText()
-        }
-        tv.typingAttributes = bodyAttrs
-        return true
-    }
-
-    // ↩ continues the list, ↩ on an empty item or ⌫ right after the bullet ends it.
-    func textView(_ tv: NSTextView, doCommandBy sel: Selector) -> Bool {
-        let sr = tv.selectedRange()
-        guard editable, sr.length == 0 else { return false }
-        guard let li = listItem(at: sr.location) else { return headingReturn(tv, sel, sr) }
-        let ns = tv.string as NSString
-        let body = ns.substring(with: NSRange(location: li.para.location + li.marker, length: li.para.length - li.marker))
-            .trimmingCharacters(in: .newlines)
-        if sel == #selector(NSResponder.insertNewline(_:)) {
-            if body.isEmpty { list(li.list.markerFormat); return true }
-            let current = ns.substring(with: NSRange(location: li.para.location, length: li.marker))
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\t.)"))
-            let next = li.list.marker(forItemNumber: (Int(current) ?? 0) + 1)
-            var attrs = tv.typingAttributes
-            attrs[.paragraphStyle] = tv.textStorage!.attribute(.paragraphStyle, at: li.para.location, effectiveRange: nil)
-            tv.insertText(NSAttributedString(string: "\n\t\(next)\t", attributes: attrs), replacementRange: sr)
-            return true
-        }
-        if sel == #selector(NSResponder.insertTab(_:)) || sel == #selector(NSResponder.insertBacktab(_:)) {
-            nest(li, deeper: sel == #selector(NSResponder.insertTab(_:)))
-            return true
-        }
-        if sel == #selector(NSResponder.deleteBackward(_:)), li.marker > 0, sr.location == li.para.location + li.marker {
-            list(li.list.markerFormat)
-            return true
-        }
-        return false
-    }
+    func trait(_ t: NSFontTraitMask) { if editable { editor.trait(t) } }
+    func toggle(_ key: NSAttributedString.Key) { if editable { editor.toggle(key) } }
+    func block(_ size: CGFloat, bold: Bool, mono: Bool = false) { if editable { editor.block(size, bold: bold, mono: mono) } }
+    func list(_ fmt: NSTextList.MarkerFormat) { if editable { editor.list(fmt) } }
+    func moveLine(up: Bool) { if editable { editor.moveLine(up: up) } }
 
     // MARK: formatting
 
@@ -935,39 +939,6 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         let m = NSMenuItem()
         m.tag = NSTextFinder.Action.showFindInterface.rawValue
         text.performTextFinderAction(m)
-    }
-
-    func trait(_ t: NSFontTraitMask) {
-        guard editable else { return }
-        let fm = NSFontManager.shared, r = text.selectedRange(), st = text.textStorage!
-        let now = (r.length > 0 ? st.attribute(.font, at: r.location, effectiveRange: nil) : text.typingAttributes[.font]) as? NSFont ?? body
-        let add = !fm.traits(of: now).contains(t)
-        let conv = { (f: NSFont) in add ? fm.convert(f, toHaveTrait: t) : fm.convert(f, toNotHaveTrait: t) }
-        if r.length == 0 { text.typingAttributes[.font] = conv(now); return }
-        guard text.shouldChangeText(in: r, replacementString: nil) else { return }
-        st.enumerateAttribute(.font, in: r) { v, sub, _ in st.addAttribute(.font, value: conv(v as? NSFont ?? self.body), range: sub) }
-        text.didChangeText()
-    }
-
-    func toggle(_ key: NSAttributedString.Key) {
-        guard editable else { return }
-        let r = text.selectedRange(), st = text.textStorage!
-        let now = (r.length > 0 ? st.attribute(key, at: r.location, effectiveRange: nil) : text.typingAttributes[key]) as? Int ?? 0
-        let v = now == 0 ? NSUnderlineStyle.single.rawValue : 0
-        if r.length == 0 { text.typingAttributes[key] = v; return }
-        guard text.shouldChangeText(in: r, replacementString: nil) else { return }
-        st.addAttribute(key, value: v, range: r)
-        text.didChangeText()
-    }
-
-    func block(_ size: CGFloat, bold: Bool, mono: Bool = false) {
-        guard editable else { return }
-        let font = mono ? NSFont.monospacedSystemFont(ofSize: size, weight: .regular) : NSFont.systemFont(ofSize: size, weight: bold ? .bold : .regular)
-        text.typingAttributes[.font] = font
-        let r = (text.string as NSString).paragraphRange(for: text.selectedRange())
-        guard r.length > 0, text.shouldChangeText(in: r, replacementString: nil) else { return }
-        text.textStorage!.addAttribute(.font, value: font, range: r)
-        text.didChangeText()
     }
 
     func addLink() {
@@ -995,82 +966,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         }
     }
 
-    // ponytail: numbered-list markers aren't renumbered after moves; Notes renumbers on save/reload.
-    func moveLine(up: Bool) {
-        guard editable else { return }
-        let ns = text.string as NSString, st = text.textStorage!
-        let cur = ns.paragraphRange(for: text.selectedRange())
-        if up ? cur.location == 0 : NSMaxRange(cur) >= ns.length { return }
-        let other = ns.paragraphRange(for: NSRange(location: up ? cur.location - 1 : NSMaxRange(cur), length: 0))
-        let (first, second) = up ? (other, cur) : (cur, other)
-        let a = st.attributedSubstring(from: first).mutableCopy() as! NSMutableAttributedString
-        let b = st.attributedSubstring(from: second).mutableCopy() as! NSMutableAttributedString
-        if !b.string.hasSuffix("\n") {  // last line has no newline: move it over
-            b.append(a.attributedSubstring(from: NSRange(location: a.length - 1, length: 1)))
-            a.deleteCharacters(in: NSRange(location: a.length - 1, length: 1))
-        }
-        let whole = NSUnionRange(first, second)
-        let offset = text.selectedRange().location - cur.location
-        let out = NSMutableAttributedString(attributedString: b)
-        out.append(a)
-        guard text.shouldChangeText(in: whole, replacementString: out.string) else { return }
-        st.replaceCharacters(in: whole, with: out)
-        text.didChangeText()
-        text.setSelectedRange(NSRange(location: (up ? first.location : first.location + b.length) + offset, length: 0))
-    }
 
-    func list(_ fmt: NSTextList.MarkerFormat) {
-        guard editable else { return }
-        let st = text.textStorage!
-        let pr = (text.string as NSString).paragraphRange(for: text.selectedRange())
-        let old = st.attributedSubstring(from: pr)
-        let firstStyle = (pr.location < st.length ? st.attribute(.paragraphStyle, at: pr.location, effectiveRange: nil)
-                                                  : text.typingAttributes[.paragraphStyle]) as? NSParagraphStyle
-        let off = firstStyle?.textLists.first?.markerFormat == fmt
-        let newList = NSTextList(markerFormat: fmt, options: 0)
-        var paras: [NSRange] = []
-        (old.string as NSString).enumerateSubstrings(in: NSRange(location: 0, length: old.length),
-                                                     options: [.byParagraphs, .substringNotRequired]) { _, _, e, _ in paras.append(e) }
-        if paras.isEmpty { paras = [NSRange(location: 0, length: 0)] }
-        let out = NSMutableAttributedString()
-        for (i, e) in paras.enumerated() {
-            let attrs = e.length > 0 ? old.attributes(at: e.location, effectiveRange: nil) : text.typingAttributes
-            let ps = (attrs[.paragraphStyle] as? NSParagraphStyle ?? .default).mutableCopy() as! NSMutableParagraphStyle
-            let c = old.attributedSubstring(from: e).mutableCopy() as! NSMutableAttributedString
-            if !ps.textLists.isEmpty, c.string.hasPrefix("\t") {
-                let tab = (c.string as NSString).range(of: "\t", range: NSRange(location: 1, length: c.length - 1))
-                if tab.location != NSNotFound { c.deleteCharacters(in: NSRange(location: 0, length: tab.location + 1)) }
-            }
-            if off {
-                indent(ps, [])
-            } else {
-                indent(ps, [newList])
-                c.insert(NSAttributedString(string: "\t\(newList.marker(forItemNumber: i + 1))\t", attributes: attrs), at: 0)
-            }
-            c.addAttribute(.paragraphStyle, value: ps, range: NSRange(location: 0, length: c.length))
-            out.append(c)
-        }
-        guard text.shouldChangeText(in: pr, replacementString: out.string) else { return }
-        st.replaceCharacters(in: pr, with: out)
-        text.didChangeText()
-        text.setSelectedRange(NSRange(location: pr.location + out.length - (out.string.hasSuffix("\n") ? 1 : 0), length: 0))
-    }
 }
 
-if CommandLine.arguments.contains("--test") {
-    let h = "<h1>Title</h1><div>a <b>b</b> <i>c</i> &amp; <u>d</u> <strike>e</strike> <a href=\"https://x.y/\">l</a></div>"
-        + "<div><br></div><ul><li>one</li><li>two</li></ul><ol><li>n</li></ol><h2>H</h2><h3>S</h3><div><tt>mono</tt></div>"
-    let s = Notes.attributed(h)
-    let out = Notes.html(s)
-    precondition(out == h, "\n got: \(out)\nwant: \(h)")
-    let md = Notes.markdown(s)
-    precondition(md == "# Title\na **b** _c_ & d ~~e~~ [l](https://x.y/)\n\n- one\n- two\n1. n\n## H\n### S\n`mono`", md)
-    let nested = "<ul><li>a</li><ul><li>b</li></ul><li>c</li></ul>"
-    precondition(Notes.html(Notes.attributed(nested)) == nested, Notes.html(Notes.attributed(nested)))
-    precondition(Notes.q(#"say "hi" \"#) == #""say \"hi\" \\""#)
-    print("ok")
-    exit(0)
-}
+if CommandLine.arguments.contains("--test") { runSelfTests() }
 
 // One-time carry-over of settings (shortcut, pins, last note…) from earlier identifiers, newest first.
 if !UserDefaults.standard.bool(forKey: "migratedSettings") {
@@ -1081,10 +980,17 @@ if !UserDefaults.standard.bool(forKey: "migratedSettings") {
     }
     UserDefaults.standard.set(true, forKey: "migratedSettings")
 }
-UserDefaults.standard.register(defaults: ["hkCode": kVK_ANSI_N, "hkMods": controlKey | optionKey, "hkLabel": "⌃⌥N"])
+UserDefaults.standard.register(defaults: ["hkCode": kVK_ANSI_N, "hkMods": controlKey | optionKey, "hkLabel": "⌃⌥N",
+                                          "capCode": kVK_ANSI_N, "capMods": controlKey | optionKey | shiftKey, "capLabel": "⌃⌥⇧N"])
 let app = App()
 var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
-InstallEventHandler(GetApplicationEventTarget(), { _, _, _ in app.togglePanel(); return noErr }, 1, &spec, nil, nil)
+InstallEventHandler(GetApplicationEventTarget(), { _, event, _ in
+    var hk = EventHotKeyID()
+    GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID), nil,
+                      MemoryLayout<EventHotKeyID>.size, nil, &hk)
+    hk.id == HotKey.Kind.capture.rawValue ? app.captureFromHotKey() : app.togglePanel()
+    return noErr
+}, 1, &spec, nil, nil)
 NSApplication.shared.setActivationPolicy(.accessory)
 NSApplication.shared.delegate = app
 NSApplication.shared.run()

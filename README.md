@@ -25,6 +25,8 @@ and saves your notes through Apple Notes.
 - **Notes management**: pin, duplicate, move to a folder, delete (to Recently Deleted), copy as
   Markdown/text/HTML, export to Markdown/text/PDF, and copy a `notesfloat://` link.
 - **Hide from screen sharing** (⌥⌘H), zoom, and a toggleable format bar.
+- **Quick capture** (**⌃⌥⇧N**): adds the selected text (with Accessibility) or the clipboard to your capture note
+  without opening the window. Also available in any app's **Services › Add to NotesFloat**.
 - **Themes**: Apple Notes (default), Liquid Glass, Graphite and Paper. Pick one in Settings or ⌘K › Change Theme.
 - **Guided setup**: a welcome guide walks through every permission on first launch (and again from Settings).
 - **Automatic updates** via [Sparkle](https://sparkle-project.org). Turn checking and auto-install on or off in
@@ -63,6 +65,7 @@ All edits still go through Apple Notes itself.
 | | |
 |---|---|
 | **⌃⌥N** | Show / hide (configurable) |
+| **⌃⌥⇧N** | Quick capture (configurable) |
 | **⌘K** | Actions |
 | **⌘P** or **⌥⌘F** | Browse and search notes |
 | **⌘N** / **⌘D** | New note / duplicate note |
@@ -124,6 +127,12 @@ git tag v0.3.0 && git push origin v0.3.0
 ```
 
 Tags with a suffix, like `v0.3.0-beta.1`, are published as pre‑releases (not offered as updates).
+
+Builds are code-signed with a self-signed identity, **NotesFloat Self-Signed**, rather than ad hoc. Every build
+then shares one designated requirement, so macOS keeps NotesFloat's permissions (Apple Notes, Full Disk Access,
+Accessibility) across updates. It isn't an Apple Developer ID, so Gatekeeper still asks on first open. Locally
+it lives in `~/Library/Keychains/NotesFloat-signing.keychain-db`; in CI it comes from the secrets `SIGNING_P12`
+(base64 `.p12`) and `SIGNING_P12_PASSWORD`. Releases fail without them.
 
 Update signing uses an EdDSA key stored in the maintainer's login keychain (account
 `me.raoufs.alhassan.NotesFloat`). Its public half is `SUPublicEDKey` in `build.sh`; the private half must be in

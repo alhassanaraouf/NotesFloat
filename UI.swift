@@ -2,15 +2,23 @@ import Cocoa
 import Carbon
 import ServiceManagement
 
+// Global shortcuts: show/hide (id 1, defaults "hk…") and quick capture (id 2, defaults "cap…").
 enum HotKey {
-    static var ref: EventHotKeyRef?
+    enum Kind: UInt32 {
+        case toggle = 1, capture = 2
+        var prefix: String { self == .toggle ? "hk" : "cap" }
+    }
+    static var refs: [UInt32: EventHotKeyRef] = [:]
 
     @discardableResult
-    static func register() -> Bool {
-        if let ref { UnregisterEventHotKey(ref); self.ref = nil }
+    static func register(_ kind: Kind = .toggle) -> Bool {
+        if let r = refs[kind.rawValue] { UnregisterEventHotKey(r); refs[kind.rawValue] = nil }
         let d = UserDefaults.standard
-        return RegisterEventHotKey(UInt32(d.integer(forKey: "hkCode")), UInt32(d.integer(forKey: "hkMods")),
-                                   EventHotKeyID(signature: 0x4E464C54, id: 1), GetApplicationEventTarget(), 0, &ref) == noErr
+        var ref: EventHotKeyRef?
+        let ok = RegisterEventHotKey(UInt32(d.integer(forKey: kind.prefix + "Code")), UInt32(d.integer(forKey: kind.prefix + "Mods")),
+                                     EventHotKeyID(signature: 0x4E464C54, id: kind.rawValue), GetApplicationEventTarget(), 0, &ref) == noErr
+        refs[kind.rawValue] = ref
+        return ok
     }
 }
 
@@ -39,6 +47,7 @@ func button(_ symbol: String, _ tip: String, _ run: @escaping () -> Void) -> NSB
     b.action = #selector(ClosureButton.fire)
     b.run = run
     b.toolTip = tip
+    b.setAccessibilityLabel(tip.components(separatedBy: "  ").first)  // VoiceOver: "Bold", not "Bold ⌘B"
     b.bezelStyle = .accessoryBarAction
     b.showsBorderOnlyWhileMouseInside = true
     b.contentTintColor = .secondaryLabelColor
@@ -111,6 +120,8 @@ final class Toast: NSView {
     let icon = NSImageView()
     let badge = NSView()
     let text = label("", 12.5, .medium)
+    let action = NSButton(title: "", target: nil, action: nil)
+    var onAction: (() -> Void)?
     var pending: DispatchWorkItem?
     var lift: NSLayoutConstraint?  // bottom offset; animated for a small slide-up
 
@@ -141,7 +152,11 @@ final class Toast: NSView {
         icon.translatesAutoresizingMaskIntoConstraints = false
         badge.addSubview(icon)
         text.textColor = NSColor.white.withAlphaComponent(0.92)
-        let row = NSStackView(views: [badge, text])
+        action.isBordered = false
+        action.target = self
+        action.action = #selector(tapped)
+        action.isHidden = true
+        let row = NSStackView(views: [badge, text, action])
         row.spacing = 8
         row.edgeInsets = NSEdgeInsets(top: 8, left: 9, bottom: 8, right: 13)
         for v in [row, card] { v.translatesAutoresizingMaskIntoConstraints = false }
@@ -158,10 +173,17 @@ final class Toast: NSView {
         alphaValue = 0
     }
     required init?(coder: NSCoder) { fatalError() }
-    override func hitTest(_ p: NSPoint) -> NSView? { nil }
+    override func hitTest(_ p: NSPoint) -> NSView? { onAction == nil ? nil : super.hitTest(p) }  // click-through unless it has a button
+    @objc func tapped() { let a = onAction; onAction = nil; pending?.perform(); a?() }
 
-    func show(_ message: String, _ symbol: String, _ tint: NSColor = .controlAccentColor) {
+    // `action` adds a button (e.g. Undo) and keeps the toast up longer so it can be reached.
+    func show(_ message: String, _ symbol: String, _ tint: NSColor = .controlAccentColor, action: (String, () -> Void)? = nil) {
         text.stringValue = message
+        onAction = action?.1
+        action.map { self.action.attributedTitle = NSAttributedString(string: $0.0, attributes: [.foregroundColor: NSColor.systemYellow, .font: NSFont.systemFont(ofSize: 12.5, weight: .bold)]) }
+        self.action.isHidden = action == nil
+        NSAccessibility.post(element: NSApp as Any, notification: .announcementRequested,
+                             userInfo: [.announcement: message, .priority: NSAccessibilityPriorityLevel.high.rawValue])
         icon.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
         badge.layer?.backgroundColor = tint.cgColor
         if alphaValue == 0 { lift?.constant = -10 }
@@ -180,7 +202,40 @@ final class Toast: NSView {
             }
         }
         pending = fade
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: fade)
+        DispatchQueue.main.asyncAfter(deadline: .now() + (action == nil ? 1.8 : 5), execute: fade)
+    }
+}
+
+// A toast on its own little floating panel, for quick capture while the notes window is hidden.
+final class HUD {
+    let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 10, height: 10), styleMask: [.borderless, .nonactivatingPanel],
+                        backing: .buffered, defer: false)
+    let toast = Toast()
+
+    init() {
+        panel.level = .statusBar
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = true
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        let root = NSView()
+        toast.translatesAutoresizingMaskIntoConstraints = false
+        root.addSubview(toast)
+        toast.lift = toast.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18)
+        NSLayoutConstraint.activate([toast.centerXAnchor.constraint(equalTo: root.centerXAnchor), toast.lift!])
+        panel.contentView = root
+    }
+
+    func show(_ message: String, _ symbol: String, _ tint: NSColor = .controlAccentColor) {
+        toast.show(message, symbol, tint)
+        panel.contentView!.layoutSubtreeIfNeeded()
+        let size = NSSize(width: toast.fittingSize.width + 60, height: toast.fittingSize.height + 40)
+        let screen = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
+        panel.setFrame(NSRect(x: screen.visibleFrame.midX - size.width / 2, y: screen.visibleFrame.maxY - size.height - 40,
+                              width: size.width, height: size.height), display: true)
+        panel.orderFrontRegardless()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.4) { [weak self] in if self?.toast.alphaValue == 0 { self?.panel.orderOut(nil) } }
     }
 }
 
