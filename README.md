@@ -71,6 +71,7 @@ All edits still go through Apple Notes itself.
 | **⌘K** | Actions |
 | **⌘V** / **⌥⌘V** | Paste (Markdown becomes formatting) / paste as plain text |
 | **⌘P** or **⌥⌘F** | Browse and search notes |
+| In the notes list | **⌃X** delete · **⇧⌘P** pin · **⌘D** duplicate · **⌘O** open in Apple Notes · **⌘K** / right-click: all actions |
 | **⌘N** / **⌘D** | New note / duplicate note |
 | **⇧⌘P** | Pin note |
 | **⌘R** | Reload from Apple Notes |

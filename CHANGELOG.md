@@ -6,7 +6,18 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-05
+
+### Added
+- **Act on notes right from the list (⌘P)** without opening them: ⌃X delete, ⇧⌘P pin, ⌘D duplicate, ⌘O open in
+  Apple Notes, ⇧⌘D copy deeplink. ⌘K or right-click shows all actions for the selected note, including Move to
+  Folder. The list stays open and moves to the next note, so you can tidy up several in a row; Undo restores a
+  deleted note.
+- **Locked notes** show a lock in the list, and opening one shows a clear "This note is locked" screen with an
+  Open in Apple Notes button.
+
 ### Changed
+- Duplicating copies Apple Notes' own formatting, and refuses notes whose checklists or attachments would be lost.
 - **About NotesFloat** sits below **Check for Updates…** in the menu bar menu.
 
 ## [0.4.0] - 2026-11-01

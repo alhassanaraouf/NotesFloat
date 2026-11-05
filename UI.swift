@@ -32,6 +32,7 @@ struct Item {
     var divider = false
     var header = false
     var body = ""  // searched, not shown; a matching excerpt replaces the subtitle
+    var id = ""  // the note a row stands for (notes list), for actions on it
     var run: () -> Void = {}
 }
 
@@ -255,7 +256,20 @@ final class RowView: NSTableRowView {
 }
 
 // Searchable command list (⌘K, notes, sub-menus). Lives in its own child window so it never resizes the note.
-final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate {
+final class MenuAction: NSMenuItem {
+    var run: () -> Void = {}
+    convenience init(_ title: String, _ symbol: String, destructive: Bool = false, enabled: Bool = true, _ run: @escaping () -> Void) {
+        self.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+        image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        isEnabled = enabled
+        if destructive { attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: NSColor.systemRed]) }
+        self.run = run
+    }
+    @objc func fire() { run() }
+}
+
+final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSTextFieldDelegate, NSMenuDelegate {
     let field = NSTextField()
     let table = NSTableView()
     let empty = label("No results", 13, .regular, .secondaryLabelColor)
@@ -265,6 +279,10 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
     var onEmpty: ((String) -> Void)?
     var onClose: () -> Void = {}
     var onResize: (CGFloat) -> Void = { _ in }
+    var rowMenu: ((Item) -> [NSMenuItem])?  // right-click actions for a row (notes list)
+    let hints = label("", 11, .medium, .tertiaryLabelColor)
+    static let defaultHints = "↑↓ Navigate    ↵ Open    esc Close"
+    var selected: Item? { ok(table.selectedRow) ? shown[table.selectedRow] : nil }
 
     init() {
         super.init(frame: .zero)
@@ -297,7 +315,8 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
         sv.autohidesScrollers = true
         sv.drawsBackground = false
         sv.contentInsets = NSEdgeInsets(top: 6, left: 0, bottom: 6, right: 0)
-        let hints = label("↑↓ Navigate    ↵ Open    esc Close", 11, .medium, .tertiaryLabelColor)
+        table.menu = NSMenu()
+        table.menu!.delegate = self
         let bottom = NSStackView(views: [context, NSView(), hints])
         context.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         for v in [top, lines[0], sv, empty, lines[1], bottom] { v.translatesAutoresizingMaskIntoConstraints = false; addSubview(v) }
@@ -327,7 +346,9 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    func open(_ items: [Item], placeholder: String, context: String, rowHeight: CGFloat = 34, onEmpty: ((String) -> Void)? = nil) {
+    func open(_ items: [Item], placeholder: String, context: String, rowHeight: CGFloat = 34, hints: String = Switcher.defaultHints,
+              onEmpty: ((String) -> Void)? = nil) {
+        self.hints.stringValue = hints
         all = items
         self.rowHeight = rowHeight
         self.onEmpty = onEmpty
@@ -340,6 +361,23 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
     func update(_ items: [Item]) {  // refresh in place, keeping the query
         all = items
         filter()
+    }
+
+    func select(id: String) {
+        if let r = shown.firstIndex(where: { $0.id == id && !id.isEmpty }), ok(r) { select(r) }
+    }
+
+    // The row after `id` (or before it, at the end): where the selection goes once `id` is gone.
+    func neighbor(of id: String) -> String? {
+        guard let i = shown.firstIndex(where: { $0.id == id }) else { return nil }
+        return (shown[(i + 1)...].first { !$0.id.isEmpty } ?? shown[..<i].last { !$0.id.isEmpty })?.id
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.removeAllItems()
+        guard ok(table.clickedRow), let rowMenu else { return }
+        select(table.clickedRow)
+        rowMenu(shown[table.clickedRow]).forEach(menu.addItem)
     }
 
     func ok(_ r: Int) -> Bool { shown.indices.contains(r) && !shown[r].divider && !shown[r].header && shown[r].enabled }
@@ -466,4 +504,25 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
         ])
         return cell
     }
+}
+
+// Shown instead of the editor for a locked (password-protected) note: only Apple Notes can open those.
+func lockedPlaceholder(open: @escaping () -> Void) -> NSStackView {
+    let icon = NSImageView(image: NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Locked")!)
+    icon.symbolConfiguration = .init(pointSize: 40, weight: .regular)
+    icon.contentTintColor = .tertiaryLabelColor
+    let title = label("This note is locked", 17, .semibold)
+    let info = label("Locked notes open only in Apple Notes.", 13, .regular, .secondaryLabelColor)
+    let b = ClosureButton(title: "Open in Apple Notes  ⌘O", target: nil, action: nil)
+    b.target = b
+    b.action = #selector(ClosureButton.fire)
+    b.run = open
+    b.bezelStyle = .push
+    b.controlSize = .large
+    let stack = NSStackView(views: [icon, title, info, b])
+    stack.orientation = .vertical
+    stack.spacing = 10
+    stack.setCustomSpacing(16, after: icon)
+    stack.setCustomSpacing(20, after: info)
+    return stack
 }

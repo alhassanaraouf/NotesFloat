@@ -55,6 +55,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     var cur: (id: String, date: Date)?
     var name = ""
     var hard = false  // attachments/tables/images/locked: never write
+    var locked = false  // password-protected: shows the locked placeholder instead of the editor
+    lazy var lockedView = lockedPlaceholder { [unowned self] in reveal() }
+    var browseMake: (([NoteRef]) -> [Item])?  // builds the notes list; kept to refresh it after list actions
+    var recentlyDeleted = Set<String>()  // Notes' database can list a just-deleted note until Notes writes it
     var soft = false  // may hold checklists/tags/colors AppleScript can't round-trip: write only after ⌘E
     var lastHTML = ""
     var timer: Timer?
@@ -72,22 +76,22 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         let hidden = d.bool(forKey: "hideShare")
         return [
             ("Note", [Cmd(title: "New Note", icon: "plus", key: "⌘n") { self.newNote() },
-             Cmd(title: "Duplicate Note", icon: "plus.square.on.square", key: "⌘d", enabled: cur != nil && !hard) { self.duplicate() },
-             Cmd(title: pinned ? "Unpin Note" : "Pin Note", icon: pinned ? "pin.slash" : "pin", key: "⇧⌘p", enabled: cur != nil) { self.togglePin() },
+             Cmd(title: "Duplicate Note", icon: "plus.square.on.square", key: "⌘d", enabled: cur != nil && !hard) { self.cur.map { self.duplicate($0.id) } },
+             Cmd(title: pinned ? "Unpin Note" : "Pin Note", icon: pinned ? "pin.slash" : "pin", key: "⇧⌘p", enabled: cur != nil) { self.cur.map { self.togglePin($0.id) } },
              Cmd(title: "Browse Notes", icon: "rectangle.stack", key: "⌘p") { self.browse() },
              Cmd(title: "Capture Into This Note", icon: "tray.and.arrow.down", key: "", enabled: cur != nil) { self.setCaptureNote() },
              Cmd(title: "Reload from Apple Notes", icon: "arrow.clockwise", key: "⌘r", enabled: cur != nil) { self.reload() },
              Cmd(title: "Go Back", icon: "arrow.backward.circle", key: "⌘[", enabled: !back.isEmpty) { self.go(-1) },
              Cmd(title: "Go Forward", icon: "arrow.forward.circle", key: "⌘]", enabled: !fwd.isEmpty) { self.go(1) }]),
             ("Share", [Cmd(title: "Copy Note As…", icon: "doc.on.clipboard", key: "⇧⌘c", enabled: cur != nil) { self.copyAs() },
-             Cmd(title: "Copy Deeplink", icon: "link", key: "⇧⌘d", enabled: cur != nil) { self.copyLink() },
+             Cmd(title: "Copy Deeplink", icon: "link", key: "⇧⌘d", enabled: cur != nil) { self.cur.map { self.copyLink($0.id) } },
              Cmd(title: "Export…", icon: "square.and.arrow.up", key: "⇧⌘e", enabled: cur != nil) { self.export() },
              Cmd(title: "Open in Apple Notes", icon: "arrow.up.forward.app", key: "⌘o", enabled: cur != nil) { self.reveal() }]),
             ("Edit", [Cmd(title: "Find in Note", icon: "text.magnifyingglass", key: "⌘f") { self.find() },
              Cmd(title: "Format…", icon: "textformat", key: "⇧⌘,", enabled: !readOnly) { self.formatMenu() },
              Cmd(title: "Move List Item Up", icon: "arrow.up", key: "⌃⌘↑", enabled: !readOnly) { self.moveLine(up: true) },
              Cmd(title: "Move List Item Down", icon: "arrow.down", key: "⌃⌘↓", enabled: !readOnly) { self.moveLine(up: false) },
-             Cmd(title: "Move to Folder…", icon: "folder", key: "", enabled: cur != nil) { self.moveMenu() }]
+             Cmd(title: "Move to Folder…", icon: "folder", key: "", enabled: cur != nil) { self.cur.map { self.moveMenu($0.id) } }]
                 + (soft && !hard ? [Cmd(title: checklist == true ? "Edit Anyway (checklists become bullets)" : "Edit Anyway",
                                         icon: "lock.open", key: "⌘e") { self.unlock() }] : [])),
             ("View", [Cmd(title: hidden ? "Show While Screen Sharing" : "Hide While Screen Sharing", icon: "video.slash", key: "⌥⌘h") { self.toggleSharing() },
@@ -101,8 +105,34 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
                      Cmd(title: "Welcome Guide", icon: "hand.wave", key: "") { self.onboarding.show() },
                      Cmd(title: "Quit NotesFloat", icon: "power", key: "⌘q") { NSApp.terminate(nil) }]),
             ("Trash", [Cmd(title: "Show Recently Deleted Notes", icon: "trash", key: "") { self.deletedMenu() },
-                       Cmd(title: "Delete Note", icon: "trash", key: "⌃x", destructive: true, enabled: cur != nil) { self.deleteNote() }]),
+                       Cmd(title: "Delete Note", icon: "trash", key: "⌃x", destructive: true, enabled: cur != nil) { self.cur.map { self.deleteNote($0.id) } }]),
         ]
+    }
+
+    // Actions on any note by id: the selected row in the notes list (shortcuts, ⌘K, right-click).
+    func noteCmds(_ id: String) -> [Cmd] {
+        let ref = noteCache.first { $0.id == id }, isLocked = ref?.locked ?? (id == cur?.id && locked)
+        let pinned = pins.contains(id) || ref?.pinned == true
+        return [
+            Cmd(title: pinned ? "Unpin" : "Pin", icon: pinned ? "pin.slash" : "pin", key: "⇧⌘p") { self.togglePin(id) },
+            Cmd(title: "Duplicate", icon: "plus.square.on.square", key: "⌘d", enabled: !isLocked) { self.duplicate(id) },
+            Cmd(title: "Copy Deeplink", icon: "link", key: "⇧⌘d") { self.copyLink(id) },
+            Cmd(title: "Move to Folder…", icon: "folder", key: "") { self.moveMenu(id, backToList: true) },
+            Cmd(title: "Open in Apple Notes", icon: "arrow.up.forward.app", key: "⌘o") { self.reveal(id) },
+            Cmd(title: "Delete", icon: "trash", key: "⌃x", destructive: true) { self.deleteNote(id) },
+        ]
+    }
+
+    // ⌘K on a row: the note's actions; actions that keep you browsing return to the list.
+    func noteActionsMenu(_ item: Item) {
+        let stay: Set<String> = ["Pin", "Unpin", "Duplicate", "Copy Deeplink", "Delete"]
+        present([Item(title: "Open", icon: "arrow.up.right.square", shortcut: "↵") { _ = self.open(item.id) }]
+                + noteCmds(item.id).map { c in
+                    Item(title: c.title, icon: c.icon, shortcut: c.label, destructive: c.destructive, enabled: c.enabled) {
+                        c.run()
+                        if stay.contains(c.title), !self.popupOpen { self.browse(select: c.title == "Delete" ? nil : item.id) }
+                    }
+                }, placeholder: "Actions for “\(item.title.isEmpty ? "Untitled" : item.title)”…")
     }
 
     var formatCmds: [Cmd] {
@@ -285,7 +315,8 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             let f = e.modifierFlags
             if readOnly, cur != nil, e.window === panel, panel.firstResponder === text, f.isDisjoint(with: [.command, .control]),
                e.characters?.isEmpty == false, ![123, 124, 125, 126, 115, 119, 116, 121].contains(e.keyCode) {  // typing, not navigating
-                hard ? toast.show("Read-only here — ⌘O to edit in Apple Notes", "lock.fill", .systemOrange)
+                locked ? toast.show("This note is locked — ⌘O opens it in Apple Notes", "lock.fill", .systemOrange)
+                : hard ? toast.show("Read-only here — ⌘O to edit in Apple Notes", "lock.fill", .systemOrange)
                      : toast.show(checklist == true ? "Has checklists — ⌘E to edit anyway" : "Protected — ⌘E to edit anyway", "lock.fill", .systemOrange)
                 return nil
             }
@@ -298,6 +329,13 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             }
             let k = (f.contains(.control) ? "⌃" : "") + (f.contains(.option) ? "⌥" : "") + (f.contains(.shift) ? "⇧" : "")
                 + (f.contains(.command) ? "⌘" : "") + key
+            if popupOpen, popupKind == "notes", let item = switcher.selected, !item.id.isEmpty {  // shortcuts act on the selected note
+                if k == "⌘k" { noteActionsMenu(item); return nil }
+                if let c = noteCmds(item.id).first(where: { $0.key == k }) {
+                    c.enabled ? c.run() : toast.show("\(c.title) isn't available for this note", "nosign", .systemOrange)
+                    return nil
+                }
+            }
             guard let c = (hiddenCmds + formatCmds + sections.flatMap(\.1)).first(where: { $0.key == k }) else { return e }
             if c.enabled {
                 let editKey = ["⌘x", "⌘c", "⌘v", "⌥⌘v", "⌘a", "⌘z", "⇧⌘z"].contains(k)
@@ -334,6 +372,12 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         popupView.layer?.shadowOffset = CGSize(width: 0, height: -6)
         popupView.addSubview(card)
         for v in [scrim, popupView] { v.isHidden = true; root.addSubview(v) }
+        root.addSubview(toast, positioned: .above, relativeTo: popupView)  // keep toasts (and Undo) above the list
+        lockedView.translatesAutoresizingMaskIntoConstraints = false
+        lockedView.isHidden = true
+        root.addSubview(lockedView, positioned: .below, relativeTo: scrim)
+        NSLayoutConstraint.activate([lockedView.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
+                                     lockedView.centerYAnchor.constraint(equalTo: scroll.centerYAnchor, constant: -20)])
 
         status.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "NotesFloat")
         let menu = NSMenu()
@@ -434,11 +478,15 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         return lastClosed.kind == kind && Date().timeIntervalSince(lastClosed.at) < 0.3
     }
 
-    func present(_ items: [Item], placeholder: String, rowHeight: CGFloat = 34, kind: String = "", onEmpty: ((String) -> Void)? = nil) {
+    func present(_ items: [Item], placeholder: String, rowHeight: CGFloat = 34, kind: String = "", hints: String = Switcher.defaultHints,
+                 onEmpty: ((String) -> Void)? = nil) {
         popupKind = kind
         browseToken = nil
+        switcher.rowMenu = kind == "notes" ? { [unowned self] item in
+            noteCmds(item.id).map { c in MenuAction(c.title, c.icon, destructive: c.destructive, enabled: c.enabled, c.run) }
+        } : nil
         switcher.open(items, placeholder: placeholder, context: cur == nil ? "NotesFloat" : name,
-                      rowHeight: rowHeight, onEmpty: onEmpty)  // calls placePopup via onResize
+                      rowHeight: rowHeight, hints: hints, onEmpty: onEmpty)  // calls placePopup via onResize
         if !popupOpen {
             scrim.isHidden = false
             popupView.isHidden = false
@@ -475,33 +523,47 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     }
 
     // Opens instantly from the last fetch, then refreshes in place.
-    func browse(deleted: Bool = false) {
-        if !deleted, toggling("notes") { return }
+    func browse(deleted: Bool = false, select: String? = nil) {
+        if !deleted, select == nil, toggling("notes") { return }
         save()
-        let local = Set(pins)
-        let rel = RelativeDateTimeFormatter(), current = cur?.id
-        let make = { (all: [NoteRef]) -> [Item] in
-            // ponytail: English folder name only; localized "Recently Deleted" folders show up in Browse.
-            let notes = all.filter { $0.deleted == deleted }
-            let p = local.union(notes.filter(\.pinned).map(\.id))  // ours + Apple Notes' pins
+        let rel = RelativeDateTimeFormatter()
+        let make = { [unowned self] (all: [NoteRef]) -> [Item] in
+            // ponytail: English folder name only (AppleScript fallback); the database path uses the folder type.
+            let notes = all.filter { $0.deleted == deleted && !(recentlyDeleted.contains($0.id) && !deleted) }
+            let p = Set(pins).union(notes.filter(\.pinned).map(\.id))  // ours + Apple Notes' pins, read fresh
             return (notes.filter { p.contains($0.id) } + notes.filter { !p.contains($0.id) }).map { n in
                 Item(title: n.name,
-                     subtitle: (n.id == current ? "Open now  ·  " : "") + "\(n.folder)  ·  \(rel.localizedString(for: n.date, relativeTo: Date()))",
-                     icon: p.contains(n.id) ? "pin.fill" : "note.text", body: n.text) {
+                     subtitle: (n.id == cur?.id ? "Open now  ·  " : "") + (n.locked ? "Locked  ·  " : "")
+                        + "\(n.folder)  ·  \(rel.localizedString(for: n.date, relativeTo: Date()))",
+                     icon: n.locked ? "lock.fill" : p.contains(n.id) ? "pin.fill" : "note.text", body: n.text, id: n.id) {
                     let query = self.switcher.field.stringValue
                     if self.open(n.id) { self.jump(to: query) }
                 }
             }
         }
+        browseMake = deleted ? nil : make  // list actions only in the main notes list
         if noteCache.isEmpty { noteCache = Notes.list() }
         present(make(noteCache), placeholder: deleted ? "Search recently deleted…" : "Search notes…", rowHeight: 46, kind: deleted ? "" : "notes",
+                hints: deleted ? Switcher.defaultHints : "↵ Open    ⌘K Actions    ⌃X Delete    esc Close",
                 onEmpty: deleted ? nil : { [unowned self] q in newNote(q) })
+        if let select { switcher.select(id: select) }
         let token = UUID()
         browseToken = token
         DispatchQueue.main.async { [self] in
             noteCache = Notes.list()
-            if popupOpen, browseToken == token { switcher.update(make(noteCache)) }
+            if popupOpen, browseToken == token {
+                let keep = switcher.selected?.id
+                switcher.update(make(noteCache))
+                if let keep { switcher.select(id: keep) }
+            }
         }
+    }
+
+    // After an action from the list: rebuild it in place and keep (or move) the selection.
+    func refreshList(select id: String?) {
+        guard popupOpen, popupKind == "notes", let make = browseMake else { return }
+        switcher.update(make(noteCache))
+        if let id { switcher.select(id: id) }
     }
 
     func deletedMenu() { browse(deleted: true) }
@@ -529,12 +591,19 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
                       placeholder: "Export as…")
     }
 
-    func moveMenu() {
-        guard let c = cur else { return }
+    func moveMenu(_ id: String, backToList: Bool = false) {
         present(Notes.folders().map { f in
             Item(title: f.name, icon: "folder") {
-                Notes.move(c.id, to: f.id) ? self.toast.show("Moved to \(f.name)", "folder")
-                                           : self.toast.show("Couldn't move the note", "exclamationmark.triangle.fill", .systemRed)
+                if Notes.move(id, to: f.id) {
+                    if let i = self.noteCache.firstIndex(where: { $0.id == id }) {
+                        let n = self.noteCache[i]
+                        self.noteCache[i] = NoteRef(id: n.id, name: n.name, folder: f.name, date: n.date, text: n.text, pinned: n.pinned, locked: n.locked)
+                    }
+                    self.toast.show("Moved to \(f.name)", "folder")
+                } else {
+                    self.toast.show("Couldn't move the note", "exclamationmark.triangle.fill", .systemRed)
+                }
+                if backToList { self.browse(select: id) }
             }
         }, placeholder: "Move to folder…")
     }
@@ -551,9 +620,8 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         cur = (id, n.date)
         name = n.name
         (hard, soft, checklist) = risk(n, id)
-        text.textStorage!.setAttributedString(n.locked
-            ? NSAttributedString(string: "🔒 This note is locked. ⌘O opens it in Notes.", attributes: [.font: body, .foregroundColor: Theme.current.text])
-            : Notes.attributed(n.html))
+        locked = n.locked
+        text.textStorage!.setAttributedString(n.locked ? NSAttributedString() : Notes.attributed(n.html))
         lastHTML = Notes.html(text.attributedString())  // baseline: untouched notes are never rewritten
         dirty = false
         if !n.locked { liveTitle() }
@@ -597,9 +665,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func openLast() {
         if let id = d.string(forKey: "noteID"), open(id, record: false) { return }
-        if let n = Notes.list().first(where: { !$0.deleted }), open(n.id, record: false) { return }
+        if let n = Notes.list().first(where: { !$0.deleted && !recentlyDeleted.contains($0.id) }), open(n.id, record: false) { return }
         if newNote(announce: false) { return }
         cur = nil
+        locked = false
         text.textStorage!.setAttributedString(NSAttributedString(
             string: "Can't reach Apple Notes.\nAllow NotesFloat in System Settings › Privacy & Security › Automation, then reopen.",
             attributes: [.font: body, .foregroundColor: Theme.current.text]))
@@ -619,30 +688,50 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         return ok
     }
 
-    func duplicate() {
-        save()
-        guard let id = Notes.create(Notes.html(text.attributedString())) else {
-            return toast.show("Couldn't duplicate the note", "exclamationmark.triangle.fill", .systemRed)
+    // Copies Apple Notes' own HTML (keeps its formatting), so only notes that HTML fully describes can be duplicated.
+    func duplicate(_ id: String) {
+        if id == cur?.id { save(wait: true) }
+        guard let n = Notes.load(id) else { return toast.show("Couldn't read the note", "exclamationmark.triangle.fill", .systemRed) }
+        let r = risk(n, id)
+        if n.locked { return toast.show("Locked notes can only be duplicated in Apple Notes", "lock.fill", .systemOrange) }
+        if r.hard || r.checklist == true {
+            return toast.show("“\(n.name)” has checklists or attachments — duplicate it in Apple Notes", "exclamationmark.triangle.fill", .systemOrange)
         }
-        if !soft { markWritten(id, Notes.modDate(id)) }  // a soft-locked original may hide checklists
-        open(id)
-        toast.show("Note duplicated", "plus.square.on.square")
+        guard let copy = Notes.create(n.html) else { return toast.show("Couldn't duplicate the note", "exclamationmark.triangle.fill", .systemRed) }
+        if !r.soft { markWritten(copy, Notes.modDate(copy)) }  // a soft-locked original may hide checklists
+        if popupOpen, popupKind == "notes" {  // stay in the list, on the new copy
+            noteCache = Notes.list()
+            refreshList(select: copy)
+        } else {
+            open(copy)
+        }
+        toast.show("Duplicated “\(n.name)”", "plus.square.on.square")
     }
 
-    func deleteNote() {  // goes to Notes' Recently Deleted, recoverable for 30 days
-        guard let c = cur else { return }
-        let folder = Notes.folderID(of: c.id), title = name
-        timer?.invalidate()
-        cur = nil
-        d.removeObject(forKey: "noteID")
-        Notes.delete(c.id)
-        back.removeAll { $0 == c.id }
-        noteCache.removeAll { $0.id == c.id }
-        openLast()
-        toast.show("Moved to Recently Deleted", "trash.fill", .systemRed, action: folder.map { f in ("Undo", { [unowned self] in
-            guard Notes.move(c.id, to: f), open(c.id) else {
+    // Moves a note to Recently Deleted (recoverable 30 days), from the editor or the list; Undo moves it back.
+    func deleteNote(_ id: String) {
+        let title = noteCache.first { $0.id == id }?.name ?? (id == cur?.id ? name : "Note")
+        let folder = Notes.folderID(of: id), wasOpen = id == cur?.id
+        let next = popupOpen && popupKind == "notes" ? switcher.neighbor(of: id) : nil
+        if wasOpen {
+            timer?.invalidate()
+            cur = nil
+            d.removeObject(forKey: "noteID")
+        }
+        Notes.delete(id)
+        recentlyDeleted.insert(id)
+        back.removeAll { $0 == id }
+        fwd.removeAll { $0 == id }
+        noteCache.removeAll { $0.id == id }
+        if wasOpen { openLast() }
+        refreshList(select: next)
+        toast.show("Moved “\(title)” to Recently Deleted", "trash.fill", .systemRed, action: folder.map { f in ("Undo", { [unowned self] in
+            guard Notes.move(id, to: f) else {
                 return toast.show("Couldn't restore “\(title)” — it's in Recently Deleted", "exclamationmark.triangle.fill", .systemRed)
             }
+            recentlyDeleted.remove(id)
+            noteCache = Notes.list()
+            if popupOpen, popupKind == "notes" { refreshList(select: id) } else if wasOpen { open(id) }
             toast.show("Restored “\(title)”", "arrow.uturn.backward")
         }) })
     }
@@ -653,17 +742,20 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         open(id, record: false)
     }
 
-    func togglePin() {
-        guard let c = cur else { return }
-        let pinned = pins.contains(c.id)
-        d.set(pinned ? pins.filter { $0 != c.id } : pins + [c.id], forKey: "pinned")
+    func togglePin(_ id: String) {
+        if !pins.contains(id), noteCache.first(where: { $0.id == id })?.pinned == true {
+            return toast.show("Pinned in Apple Notes — unpin it there", "pin.fill", .systemOrange)  // Apple's pins are read-only to us
+        }
+        let pinned = pins.contains(id)
+        d.set(pinned ? pins.filter { $0 != id } : pins + [id], forKey: "pinned")
+        refreshList(select: id)
         toast.show(pinned ? "Unpinned" : "Pinned to top of list", pinned ? "pin.slash" : "pin.fill")
     }
 
-    func reveal() {
-        guard let c = cur else { return }
+    func reveal(_ id: String? = nil) {
+        guard let id = id ?? cur?.id else { return }
         hide()
-        Notes.reveal(c.id)
+        Notes.reveal(id)
     }
 
     func unlock() {
@@ -674,8 +766,8 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         toast.show("Editing enabled", "lock.open.fill")
     }
 
-    func copyLink() {
-        guard let c = cur, let id = c.id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return }
+    func copyLink(_ noteID: String) {
+        guard let id = noteID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("notesfloat://open?id=\(id)", forType: .string)
         toast.show("Deeplink copied", "link")
@@ -698,8 +790,8 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     }
 
     func toggleFormatBar() {
-        formatBar.isHidden.toggle()
-        d.set(!formatBar.isHidden, forKey: "formatBar")
+        d.set(!(d.object(forKey: "formatBar") as? Bool ?? true), forKey: "formatBar")
+        applyMode()
     }
 
     func zoom(_ step: Int) {
@@ -735,13 +827,16 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func applyMode() {
         text.isEditable = !readOnly
+        lockedView.isHidden = !locked
+        scroll.isHidden = locked
+        formatBar.isHidden = locked || !(d.object(forKey: "formatBar") as? Bool ?? true)
         panel.title = cur == nil ? "NotesFloat" : name
         titleLabel.stringValue = panel.title
         updateFooter()
     }
 
     func updateFooter() {
-        statusLabel.stringValue = hard ? "Read-only  ·  ⌘O Open in Apple Notes"
+        statusLabel.stringValue = locked ? "" : hard ? "Read-only  ·  ⌘O Open in Apple Notes"
             : !soft ? ""
             : checklist == true ? "Has checklists — editing turns them into bullets  ·  ⌘E Edit anyway"
             : checklist == nil ? "May contain checklists  ·  ⌘E Edit anyway"

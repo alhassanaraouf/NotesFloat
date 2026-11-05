@@ -8,6 +8,7 @@ struct NoteRef {
     var text = ""  // full plain text, for search
     var pinned = false  // pinned in Apple Notes
     var deleted = false  // in Recently Deleted
+    var locked = false  // password-protected: only Apple Notes can open it
 }
 struct ListPara { let style: Int; let done: Bool }  // Notes paragraph style: 100 bullet, 101 dash, 102 number, 103 checklist
 struct Block { let tag: String; let lists: [String]; let runs: [(String, [NSAttributedString.Key: Any])] }
@@ -43,7 +44,7 @@ enum Notes {
         guard let d = run("""
             on walk(f, out)
                 tell application "Notes"
-                    set end of out to {name of f, id of notes of f, name of notes of f, modification date of notes of f, plaintext of notes of f}
+                    set end of out to {name of f, id of notes of f, name of notes of f, modification date of notes of f, plaintext of notes of f, password protected of notes of f}
                     repeat with s in folders of f
                         my walk(s, out)
                     end repeat
@@ -63,13 +64,13 @@ enum Notes {
         for i in stride(from: 1, through: d.numberOfItems, by: 1) {
             guard let f = d.atIndex(i), let folder = f.atIndex(1)?.stringValue,
                   let ids = f.atIndex(2), let names = f.atIndex(3), let dates = f.atIndex(4) else { continue }
-            let texts = f.atIndex(5)
+            let texts = f.atIndex(5), locks = f.atIndex(6)
             for j in stride(from: 1, through: ids.numberOfItems, by: 1) {
                 guard let id = ids.atIndex(j)?.stringValue, seen.insert(id).inserted else { continue }
                 // ponytail: English folder name; the database path detects Recently Deleted by folder type instead.
                 out.append(NoteRef(id: id, name: names.atIndex(j)?.stringValue ?? "", folder: folder,
                                    date: dates.atIndex(j)?.dateValue ?? .distantPast, text: texts?.atIndex(j)?.stringValue ?? "",
-                                   deleted: folder == "Recently Deleted"))
+                                   deleted: folder == "Recently Deleted", locked: locks?.atIndex(j)?.booleanValue ?? false))
             }
         }
         return out.sorted { $0.date > $1.date }
@@ -175,7 +176,8 @@ enum Notes {
                                date: Date(timeIntervalSinceReferenceDate: sqlite3_column_double(st, 2)),
                                text: text.replacingOccurrences(of: "\u{FFFC}", with: ""),
                                pinned: sqlite3_column_int(st, 5) != 0,
-                               deleted: sqlite3_column_int(st, 4) == 1))  // folder type 1 = Recently Deleted
+                               deleted: sqlite3_column_int(st, 4) == 1,  // folder type 1 = Recently Deleted
+                               locked: locked))
         }
         return ok ? out.sorted { $0.date > $1.date } : nil
     }
