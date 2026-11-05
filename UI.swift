@@ -53,6 +53,7 @@ func button(_ symbol: String, _ tip: String, _ run: @escaping () -> Void) -> NSB
     b.showsBorderOnlyWhileMouseInside = true
     b.contentTintColor = .secondaryLabelColor
     b.symbolConfiguration = .init(pointSize: 13, weight: .medium)
+    b.refusesFirstResponder = true  // clicking/Tab never parks a focus ring on toolbar icons; the editor keeps focus
     b.widthAnchor.constraint(equalToConstant: 28).isActive = true
     b.heightAnchor.constraint(equalToConstant: 26).isActive = true
     return b
@@ -509,7 +510,7 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
 // Shown instead of the editor for a locked (password-protected) note: only Apple Notes can open those.
 func lockedPlaceholder(open: @escaping () -> Void) -> NSStackView {
     let icon = NSImageView(image: NSImage(systemSymbolName: "lock.fill", accessibilityDescription: "Locked")!)
-    icon.symbolConfiguration = .init(pointSize: 40, weight: .regular)
+    icon.symbolConfiguration = .init(pointSize: 36, weight: .regular)  // medium: clear, not dominant
     icon.contentTintColor = .tertiaryLabelColor
     let title = label("This note is locked", 17, .semibold)
     let info = label("Locked notes open only in Apple Notes.", 13, .regular, .secondaryLabelColor)

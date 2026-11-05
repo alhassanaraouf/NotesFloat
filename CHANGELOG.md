@@ -6,6 +6,13 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-11-05
+
+### Fixed
+- The locked-note screen shows its lock, title and button centred in the window; it was squeezed against the
+  top bar with only the button visible.
+- Toolbar icons no longer take keyboard focus (no stray focus ring around the sidebar button).
+
 ## [0.5.0] - 2026-11-05
 
 ### Added

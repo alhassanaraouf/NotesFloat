@@ -377,7 +377,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         lockedView.isHidden = true
         root.addSubview(lockedView, positioned: .below, relativeTo: scrim)
         NSLayoutConstraint.activate([lockedView.centerXAnchor.constraint(equalTo: scroll.centerXAnchor),
-                                     lockedView.centerYAnchor.constraint(equalTo: scroll.centerYAnchor, constant: -20)])
+                                     lockedView.centerYAnchor.constraint(equalTo: scroll.centerYAnchor, constant: -10)])
 
         status.button?.image = NSImage(systemSymbolName: "note.text", accessibilityDescription: "NotesFloat")
         let menu = NSMenu()
@@ -827,8 +827,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func applyMode() {
         text.isEditable = !readOnly
-        lockedView.isHidden = !locked
-        scroll.isHidden = locked
+        lockedView.isHidden = !locked  // over the (empty, read-only) editor, which keeps its space and the focus
         formatBar.isHidden = locked || !(d.object(forKey: "formatBar") as? Bool ?? true)
         panel.title = cur == nil ? "NotesFloat" : name
         titleLabel.stringValue = panel.title
