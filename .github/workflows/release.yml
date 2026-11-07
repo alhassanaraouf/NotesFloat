@@ -44,3 +44,27 @@ jobs:
             --title "NotesFloat ${GITHUB_REF_NAME}" \
             --notes-file build/release-notes.md \
             --generate-notes $pre
+
+  # Bumps the cask in alhassanaraouf/homebrew-tap. Needs TAP_GITHUB_TOKEN: a fine-grained PAT with
+  # Contents read/write on that repo only.
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update cask
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -n "$TAP_TOKEN" ] || { echo "TAP_GITHUB_TOKEN is not set"; exit 1; }
+          case "$GITHUB_REF_NAME" in *-*) echo "pre-release, skipping"; exit 0 ;; esac
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA=$(gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p SHA256SUMS.txt -O - | awk -v f="NotesFloat-$VERSION.dmg" '$2==f{print $1}')
+          [ -n "$SHA" ] || { echo "no sha256 for the dmg"; exit 1; }
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/alhassanaraouf/homebrew-tap.git" tap
+          cd tap
+          sed -i -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$SHA\"/" Casks/notesfloat.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "notesfloat $VERSION"
+          git push origin HEAD:main
