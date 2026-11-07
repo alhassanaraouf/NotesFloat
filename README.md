@@ -45,6 +45,8 @@ and saves your notes through Apple Notes.
    ```
 3. Follow the welcome guide: it asks for access to Apple Notes and, optionally, Full Disk Access.
 
+Or with Homebrew: `brew install --cask alhassanaraouf/tap/notesfloat`, then allow it once as above.
+
 After that, NotesFloat updates itself. (Versions before 0.3 don't include the updater, so install 0.3 manually once.)
 
 Requires **macOS 26 or later**, on Apple silicon or Intel.
