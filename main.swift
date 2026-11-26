@@ -56,6 +56,9 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     var name = ""
     var hard = false  // attachments/tables/images/locked: never write
     var locked = false  // password-protected: shows the locked placeholder instead of the editor
+    var readOnlyWhy = ""  // why a hard read-only note can't be edited here ("Has images", …)
+    var hasImages = false  // re-fit images when the width changes
+    var imagesFitWidth: CGFloat = 0  // visible width the images were last fitted to
     lazy var lockedView = lockedPlaceholder { [unowned self] in reveal() }
     var browseMake: (([NoteRef]) -> [Item])?  // builds the notes list; kept to refresh it after list actions
     var recentlyDeleted = Set<String>()  // Notes' database can list a just-deleted note until Notes writes it
@@ -266,6 +269,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         text.importsGraphics = false
         text.allowsUndo = true
         text.usesFindBar = true
+        text.usesRolloverButtonForSelection = false  // no Markup/Services hover button over images (notes with images are read-only)
         text.drawsBackground = false
         text.font = body
         text.textColor = .textColor
@@ -316,7 +320,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             if readOnly, cur != nil, e.window === panel, panel.firstResponder === text, f.isDisjoint(with: [.command, .control]),
                e.characters?.isEmpty == false, ![123, 124, 125, 126, 115, 119, 116, 121].contains(e.keyCode) {  // typing, not navigating
                 locked ? toast.show("This note is locked — ⌘O opens it in Apple Notes", "lock.fill", .systemOrange)
-                : hard ? toast.show("Read-only here — ⌘O to edit in Apple Notes", "lock.fill", .systemOrange)
+                : hard ? toast.show("\(readOnlyWhy.isEmpty ? "Read-only here" : readOnlyWhy) — ⌘O to edit in Apple Notes", "lock.fill", .systemOrange)
                      : toast.show(checklist == true ? "Has checklists — ⌘E to edit anyway" : "Protected — ⌘E to edit anyway", "lock.fill", .systemOrange)
                 return nil
             }
@@ -515,6 +519,14 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     func fitWidth() {
         let w = scroll.contentView.bounds.width
         if abs(text.frame.width - w) > 0.5 { text.setFrameSize(NSSize(width: w, height: text.frame.height)) }
+        if hasImages, abs(w - imagesFitWidth) > 0.5 { fitImages() }  // AppKit may already have resized the text view
+    }
+
+    func fitImages() {
+        imagesFitWidth = scroll.contentView.bounds.width
+        let width = scroll.contentView.bounds.width - text.textContainerInset.width * 2 - 2 * (text.textContainer?.lineFragmentPadding ?? 5)
+        hasImages = Notes.fitImages(text.textStorage!, width: width)
+        if hasImages { text.layoutManager?.invalidateLayout(forCharacterRange: NSRange(location: 0, length: text.textStorage!.length), actualCharacterRange: nil) }
     }
 
     func actions() {
@@ -621,7 +633,11 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         name = n.name
         (hard, soft, checklist) = risk(n, id)
         locked = n.locked
+        readOnlyWhy = n.html.range(of: "<img", options: .caseInsensitive) != nil ? "Has images"
+            : n.html.range(of: "<table", options: .caseInsensitive) != nil ? "Has a table"
+            : n.attachments > 0 ? "Has attachments" : ""
         text.textStorage!.setAttributedString(n.locked ? NSAttributedString() : Notes.attributed(n.html))
+        fitImages()  // shown scaled to fit; such notes stay read-only (saving would delete their images)
         lastHTML = Notes.html(text.attributedString())  // baseline: untouched notes are never rewritten
         dirty = false
         if !n.locked { liveTitle() }
@@ -828,14 +844,14 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     func applyMode() {
         text.isEditable = !readOnly
         lockedView.isHidden = !locked  // over the (empty, read-only) editor, which keeps its space and the focus
-        formatBar.isHidden = locked || !(d.object(forKey: "formatBar") as? Bool ?? true)
+        formatBar.isHidden = hard || !(d.object(forKey: "formatBar") as? Bool ?? true)  // nothing to format in notes we can't edit
         panel.title = cur == nil ? "NotesFloat" : name
         titleLabel.stringValue = panel.title
         updateFooter()
     }
 
     func updateFooter() {
-        statusLabel.stringValue = locked ? "" : hard ? "Read-only  ·  ⌘O Open in Apple Notes"
+        statusLabel.stringValue = locked ? "" : hard ? "\(readOnlyWhy.isEmpty ? "Read-only" : readOnlyWhy + " — edit in Apple Notes")  ·  ⌘O"
             : !soft ? ""
             : checklist == true ? "Has checklists — editing turns them into bullets  ·  ⌘E Edit anyway"
             : checklist == nil ? "May contain checklists  ·  ⌘E Edit anyway"

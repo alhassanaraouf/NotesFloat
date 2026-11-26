@@ -508,6 +508,30 @@ enum Notes {
         }.joined()
     }
 
+    // Images arrive (as data: URLs in Apple Notes' HTML) at their pixel size; scale each to the text width, keeping its
+    // proportions, never enlarging. Returns whether there were any, so callers can skip re-fitting text-only notes.
+    @discardableResult
+    static func fitImages(_ s: NSAttributedString, width: CGFloat) -> Bool {
+        var any = false
+        s.enumerateAttribute(.attachment, in: NSRange(location: 0, length: s.length)) { v, _, _ in
+            guard let a = v as? NSTextAttachment, let img = a.image ?? a.fileWrapper?.regularFileContents.flatMap(NSImage.init(data:)) else { return }
+            // Original pixel size, so re-fitting after a resize starts from the real image, not the last fit.
+            let px = img.representations.first.map { NSSize(width: $0.pixelsWide, height: $0.pixelsHigh) }.flatMap { $0.width > 0 ? $0 : nil } ?? img.size
+            guard px.width > 0 else { return }
+            any = true
+            let w = min(px.width, max(width, 40))
+            let size = NSSize(width: w, height: (px.height * w / px.width).rounded())
+            // TextKit 1 sizes the line from the cell's image, not just `bounds`: resize the image itself or a tall gap
+            // is left above it.
+            img.size = size
+            a.image = img
+            a.attachmentCell = NSTextAttachmentCell(imageCell: img)
+            a.bounds = NSRect(origin: .zero, size: size)
+            a.allowsTextAttachmentView = false
+        }
+        return any
+    }
+
     // Length of a list paragraph's leading "\t•\t" / "\t12.\t" marker (0 if it has none).
     static func markerLength(_ ns: NSString, _ p: NSRange) -> Int {
         guard p.length > 1, ns.character(at: p.location) == 9 else { return 0 }

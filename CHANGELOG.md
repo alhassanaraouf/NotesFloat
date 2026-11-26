@@ -6,6 +6,14 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+### Added
+- **Images show in notes.** Notes with photos, screenshots or other images display them in place, scaled to fit
+  the window. They stay read-only here (Apple Notes deletes images when another app saves a note), and the bottom
+  line says why: "Has images — edit in Apple Notes · ⌘O". Tables and other attachments are explained the same way.
+
+### Changed
+- The format bar hides for notes NotesFloat can't edit.
+
 ## [0.5.1] - 2026-11-05
 
 ### Fixed

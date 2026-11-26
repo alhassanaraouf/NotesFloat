@@ -124,6 +124,18 @@ func runSelfTests() -> Never {
     check(Notes.looksLikeMarkdown(md) && Notes.looksLikeMarkdown("- milk\n- eggs") && !Notes.looksLikeMarkdown("Just a sentence, 2*3*4 = 24.")
           && !Notes.looksLikeMarkdown("email me at a_b_c@x.y"), "detects Markdown, leaves plain text alone")
 
+    // Images in read-only notes: fitted to the width, proportions kept, never enlarged
+    let png = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 400, pixelsHigh: 200, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                               isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!.representation(using: .png, properties: [:])!
+    let imgNote = NSMutableAttributedString(attributedString: Notes.attributed("<div>pic</div><div><img src=\"data:image/png;base64,\(png.base64EncodedString())\"></div>"))
+    var bounds: [NSRect] = []
+    let hasImg = Notes.fitImages(imgNote, width: 100)
+    imgNote.enumerateAttribute(.attachment, in: NSRange(location: 0, length: imgNote.length)) { v, _, _ in if let a = v as? NSTextAttachment { bounds.append(a.bounds) } }
+    check(hasImg && bounds.map(\.size) == [NSSize(width: 100, height: 50)], "images scale down to fit, keeping proportions", "\(bounds)")
+    _ = Notes.fitImages(imgNote, width: 1000)
+    bounds = []; imgNote.enumerateAttribute(.attachment, in: NSRange(location: 0, length: imgNote.length)) { v, _, _ in if let a = v as? NSTextAttachment { bounds.append(a.bounds) } }
+    check(bounds.map(\.size) == [NSSize(width: 400, height: 200)], "images are never enlarged past their size", "\(bounds)")
+
     // Notes' database format: gzip(protobuf), built by hand: title, a ticked checklist item, a bullet
     func varint(_ v: Int) -> [UInt8] { var v = UInt64(v), o: [UInt8] = []; repeat { o.append(UInt8(v & 0x7f) | (v > 0x7f ? 0x80 : 0)); v >>= 7 } while v > 0; return o }
     func num(_ f: Int, _ v: Int) -> [UInt8] { varint(f << 3) + varint(v) }
