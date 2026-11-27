@@ -45,23 +45,27 @@ jobs:
             --notes-file build/release-notes.md \
             --generate-notes $pre
 
-  # Bumps the cask in alhassanaraouf/homebrew-tap. Needs TAP_GITHUB_TOKEN: a fine-grained PAT with
-  # Contents read/write on that repo only.
+  # Bumps the cask in alhassanaraouf/homebrew-tap. Needs TAP_DEPLOY_KEY: the private half of an SSH deploy key
+  # with write access on that repo only (Settings › Deploy keys there), as Valkey's release does.
   homebrew:
     needs: release
     runs-on: ubuntu-latest
     steps:
       - name: Update cask
         env:
-          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
           GH_TOKEN: ${{ github.token }}
         run: |
-          [ -n "$TAP_TOKEN" ] || { echo "TAP_GITHUB_TOKEN is not set"; exit 1; }
+          [ -n "$TAP_DEPLOY_KEY" ] || { echo "TAP_DEPLOY_KEY is not set"; exit 1; }
           case "$GITHUB_REF_NAME" in *-*) echo "pre-release, skipping"; exit 0 ;; esac
           VERSION="${GITHUB_REF_NAME#v}"
           SHA=$(gh release download "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" -p SHA256SUMS.txt -O - | awk -v f="NotesFloat-$VERSION.dmg" '$2==f{print $1}')
           [ -n "$SHA" ] || { echo "no sha256 for the dmg"; exit 1; }
-          git clone "https://x-access-token:$TAP_TOKEN@github.com/alhassanaraouf/homebrew-tap.git" tap
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_key && chmod 600 ~/.ssh/tap_key
+          echo 'github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl' >> ~/.ssh/known_hosts   # from api.github.com/meta
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_key -o IdentitiesOnly=yes"
+          git clone git@github.com:alhassanaraouf/homebrew-tap.git tap
           cd tap
           sed -i -E "s/^  version \".*\"/  version \"$VERSION\"/; s/^  sha256 \".*\"/  sha256 \"$SHA\"/" Casks/notesfloat.rb
           git config user.name "github-actions[bot]"
