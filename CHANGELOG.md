@@ -6,6 +6,8 @@ the version and date, then tag.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-27
+
 ### Added
 - **Images show in notes.** Notes with photos, screenshots or other images display them in place, scaled to fit
   the window. They stay read-only here (Apple Notes deletes images when another app saves a note), and the bottom
