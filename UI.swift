@@ -527,3 +527,55 @@ func lockedPlaceholder(open: @escaping () -> Void) -> NSStackView {
     stack.setCustomSpacing(20, after: info)
     return stack
 }
+
+// Short, interruptible motion with a quick start and a soft landing. Scale/slide/cross-fade effects are Core
+// Animation animations on the presentation only (the model never changes), so an interrupted one can't leave a view
+// scaled or transparent. With Reduce Motion on, everything is instant.
+enum Motion {
+    static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    static let ease = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
+
+    // Animates `changes` (animator()/implicit) over `duration`; instant with Reduce Motion.
+    static func animate(_ duration: TimeInterval, _ changes: () -> Void, done: (() -> Void)? = nil) {
+        NSAnimationContext.runAnimationGroup({ c in
+            c.duration = reduced ? 0 : duration
+            c.timingFunction = ease
+            c.allowsImplicitAnimation = true
+            changes()
+        }, completionHandler: done)
+    }
+
+    // Scale around the view's centre (AppKit layers anchor at a corner), optionally nudged vertically.
+    static func transform(_ layer: CALayer, scale: CGFloat, dy: CGFloat) -> CATransform3D {
+        let b = layer.bounds, ax = (0.5 - layer.anchorPoint.x) * b.width, ay = (0.5 - layer.anchorPoint.y) * b.height
+        var t = CATransform3DMakeTranslation(ax, ay + dy, 0)
+        t = CATransform3DScale(t, scale, scale, 1)
+        return CATransform3DTranslate(t, -ax, -ay, 0)
+    }
+
+    // Grows in from `scale` (and `dy`) to its real size. `out` shrinks towards it instead and holds there until
+    // `settle` removes it, so a view that's being hidden doesn't flash back to full size first.
+    static func pop(_ v: NSView, scale: CGFloat, dy: CGFloat = 0, duration: TimeInterval, out: Bool = false) {
+        guard !reduced, let layer = v.layer else { return }
+        let a = CABasicAnimation(keyPath: "transform")
+        let t = NSValue(caTransform3D: transform(layer, scale: scale, dy: dy)), id = NSValue(caTransform3D: CATransform3DIdentity)
+        a.fromValue = out ? id : t
+        a.toValue = out ? t : id
+        a.duration = duration
+        a.timingFunction = ease
+        if out { a.fillMode = .forwards; a.isRemovedOnCompletion = false }
+        layer.add(a, forKey: "pop")
+    }
+
+    static func settle(_ v: NSView) { v.layer?.removeAnimation(forKey: "pop") }
+
+    // Old content fades into new (note switches, theme changes).
+    static func crossfade(_ v: NSView, _ duration: TimeInterval = 0.16) {
+        guard !reduced, let layer = v.layer else { return }
+        let t = CATransition()
+        t.type = .fade
+        t.duration = duration
+        t.timingFunction = ease
+        layer.add(t, forKey: "crossfade")
+    }
+}

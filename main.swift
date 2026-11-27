@@ -68,7 +68,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     var back: [String] = [], fwd: [String] = []
 
     var readOnly: Bool { cur == nil || hard || soft }
-    var popupOpen: Bool { !popupView.isHidden }
+    var popupOpen = false  // set immediately on open/close; the view may still be fading out
     var editable: Bool { !popupOpen && !readOnly }
     var pins: [String] { d.stringArray(forKey: "pinned") ?? [] }
 
@@ -250,6 +250,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             }
         }
 
+        scroll.wantsLayer = true
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
@@ -428,6 +429,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     }
 
     func applyTheme() {
+        if panel.isVisible { Motion.crossfade(root, 0.2) }
         let t = Theme.current
         panel.appearance = t.appearance.map { NSAppearance(named: $0)! }
         root.fill = t.background
@@ -455,19 +457,26 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         } else {
             openLast()
         }
+        let appearing = !panel.isVisible || hiding
         hiding = false
         if !panel.isVisible { panel.alphaValue = 0 }
         panel.makeKeyAndOrderFront(nil)
         panel.makeFirstResponder(text)
-        NSAnimationContext.runAnimationGroup({ $0.duration = 0.12; panel.animator().alphaValue = 1 }) { [self] in panel.invalidateShadow() }
+        if appearing, let content = panel.contentView {
+            Motion.settle(content)
+            Motion.pop(content, scale: 0.97, duration: 0.2)
+        }
+        Motion.animate(0.16, { panel.animator().alphaValue = 1 }) { [self] in panel.invalidateShadow() }
     }
 
     func hide() {
         closeSwitcher()
         save()
         hiding = true
-        NSAnimationContext.runAnimationGroup({ $0.duration = 0.1; panel.animator().alphaValue = 0 }) { [self] in
-            if hiding { panel.orderOut(nil); panel.alphaValue = 1 }
+        if let content = panel.contentView { Motion.pop(content, scale: 0.98, duration: 0.12, out: true) }
+        Motion.animate(0.12, { panel.animator().alphaValue = 0 }) { [self] in
+            if let content = panel.contentView { Motion.settle(content) }
+            if hiding { panel.orderOut(nil); panel.alphaValue = 1 }  // unless shown again mid-fade
         }
     }
 
@@ -492,10 +501,13 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         switcher.open(items, placeholder: placeholder, context: cur == nil ? "NotesFloat" : name,
                       rowHeight: rowHeight, hints: hints, onEmpty: onEmpty)  // calls placePopup via onResize
         if !popupOpen {
+            popupOpen = true
             scrim.isHidden = false
+            Motion.settle(popupView)
+            if popupView.isHidden { popupView.alphaValue = 0 }  // reopening mid-fade continues from where it is
             popupView.isHidden = false
-            popupView.alphaValue = 0
-            NSAnimationContext.runAnimationGroup { $0.duration = 0.12; popupView.animator().alphaValue = 1 }
+            Motion.pop(popupView, scale: 0.97, dy: 6, duration: 0.18)
+            Motion.animate(0.14) { popupView.animator().alphaValue = 1 }
         }
         panel.makeFirstResponder(switcher.field)
     }
@@ -505,15 +517,26 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         popupHeight = height
         let b = root.bounds
         let h = min(height, b.height - 48)
-        popupView.frame = NSRect(x: 10, y: b.height - 40 - h, width: b.width - 20, height: h)
+        let frame = NSRect(x: 10, y: b.height - 40 - h, width: b.width - 20, height: h)
+        // Glide when the results change while it's showing; snap when opening or while the window is being resized.
+        if popupOpen, !popupView.isHidden, !panel.inLiveResize, popupView.frame.width == frame.width, popupView.frame != frame {
+            Motion.animate(0.12) { popupView.animator().frame = frame }
+        } else {
+            popupView.frame = frame
+        }
     }
 
     func closeSwitcher() {
         guard popupOpen else { return }
+        popupOpen = false
         lastClosed = (popupKind, Date())
-        scrim.isHidden = true
-        popupView.isHidden = true
+        scrim.isHidden = true  // clicks reach the note right away; the card just fades
         panel.makeFirstResponder(text)
+        Motion.pop(popupView, scale: 0.98, duration: 0.1, out: true)
+        Motion.animate(0.1, { popupView.animator().alphaValue = 0 }) { [self] in
+            Motion.settle(popupView)
+            if !popupOpen { popupView.isHidden = true; popupView.alphaValue = 1 }  // unless reopened mid-fade
+        }
     }
 
     func fitWidth() {
@@ -628,6 +651,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         guard let n = Notes.load(id) else { return false }
         saver.expect(id, n.date)
         if record, let c = cur, c.id != id { back.append(c.id); fwd = [] }
+        if cur?.id != id, panel.isVisible { Motion.crossfade(root) }  // a different note fades in
         d.set(id, forKey: "noteID")
         cur = (id, n.date)
         name = n.name
@@ -646,6 +670,8 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         applyMode()
         let firstLine = (text.string as NSString).range(of: "\n").location
         text.setSelectedRange(NSRange(location: 0, length: selectTitle ? (firstLine == NSNotFound ? (text.string as NSString).length : firstLine) : 0))
+        scroll.contentView.scroll(to: .zero)  // open at the top (reopenInPlace restores the old position after)
+        scroll.reflectScrolledClipView(scroll.contentView)
         return true
     }
 
@@ -807,7 +833,13 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func toggleFormatBar() {
         d.set(!(d.object(forKey: "formatBar") as? Bool ?? true), forKey: "formatBar")
-        applyMode()
+        let showing = d.bool(forKey: "formatBar")
+        if showing { formatBar.alphaValue = 0 }
+        Motion.animate(0.18) {
+            applyMode()
+            root.layoutSubtreeIfNeeded()  // the note area grows/shrinks smoothly instead of jumping
+            formatBar.animator().alphaValue = showing ? 1 : 0
+        }
     }
 
     func zoom(_ step: Int) {
@@ -845,6 +877,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         text.isEditable = !readOnly
         lockedView.isHidden = !locked  // over the (empty, read-only) editor, which keeps its space and the focus
         formatBar.isHidden = hard || !(d.object(forKey: "formatBar") as? Bool ?? true)  // nothing to format in notes we can't edit
+        if !formatBar.isHidden, formatBar.alphaValue == 0, !NSAnimationContext.current.allowsImplicitAnimation { formatBar.alphaValue = 1 }
         panel.title = cur == nil ? "NotesFloat" : name
         titleLabel.stringValue = panel.title
         updateFooter()

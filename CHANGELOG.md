@@ -12,7 +12,14 @@ the version and date, then tag.
   line says why: "Has images — edit in Apple Notes · ⌘O". Tables and other attachments are explained the same way.
 
 ### Changed
+- **Smoother interactions:** the window grows in slightly as it fades in and settles out when hidden; ⌘K and ⌘P
+  fade and settle in and out, and their height glides as results change; switching notes and themes cross-fades;
+  the format bar slides. Short (0.1–0.2 s), and instant when Reduce Motion is on.
 - The format bar hides for notes NotesFloat can't edit.
+
+### Fixed
+- Notes always open at the top; one could open scrolled to where the previous note was.
+- Reopening ⌘K or ⌘P while one is still fading out can't leave it hidden or half-transparent.
 
 ## [0.5.1] - 2026-11-05
 

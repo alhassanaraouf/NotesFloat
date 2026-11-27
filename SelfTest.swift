@@ -136,6 +136,18 @@ func runSelfTests() -> Never {
     bounds = []; imgNote.enumerateAttribute(.attachment, in: NSRange(location: 0, length: imgNote.length)) { v, _, _ in if let a = v as? NSTextAttachment { bounds.append(a.bounds) } }
     check(bounds.map(\.size) == [NSSize(width: 400, height: 200)], "images are never enlarged past their size", "\(bounds)")
 
+    // Motion leaves the model untouched (only presentation animates), so an interrupted effect can't stick
+    let mv = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 100))
+    mv.wantsLayer = true
+    Motion.pop(mv, scale: 0.97, dy: 6, duration: 0.2)
+    Motion.crossfade(mv)
+    check(CATransform3DIsIdentity(mv.layer!.transform) && mv.alphaValue == 1, "motion never changes a view's real size or opacity")
+    let centre = CATransform3DMakeTranslation(0, 0, 0), t = Motion.transform(mv.layer!, scale: 0.5, dy: 0)
+    let p = CGPoint(x: 100, y: 50).applying(CATransform3DGetAffineTransform(t))
+    check(p == CGPoint(x: 100, y: 50) && !CATransform3DEqualToTransform(t, centre), "scaling keeps the view's centre in place", "\(p)")
+    Motion.settle(mv)
+    check(mv.layer!.animation(forKey: "pop") == nil, "settle removes a held animation")
+
     // Notes' database format: gzip(protobuf), built by hand: title, a ticked checklist item, a bullet
     func varint(_ v: Int) -> [UInt8] { var v = UInt64(v), o: [UInt8] = []; repeat { o.append(UInt8(v & 0x7f) | (v > 0x7f ? 0x80 : 0)); v >>= 7 } while v > 0; return o }
     func num(_ f: Int, _ v: Int) -> [UInt8] { varint(f << 3) + varint(v) }
