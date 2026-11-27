@@ -13,13 +13,14 @@ the version and date, then tag.
 
 ### Changed
 - **Smoother interactions:** the window grows in slightly as it fades in and settles out when hidden; ⌘K and ⌘P
-  fade and settle in and out, and their height glides as results change; switching notes and themes cross-fades;
-  the format bar slides. Short (0.1–0.2 s), and instant when Reduce Motion is on.
+  fade and settle in and out, and their height glides as results change; switching notes and themes fades in;
+  the format bar slides smoothly, moving the note area with it. Short (0.1–0.2 s), and instant when Reduce Motion is on.
 - The format bar hides for notes NotesFloat can't edit.
 
 ### Fixed
 - Notes always open at the top; one could open scrolled to where the previous note was.
 - Reopening ⌘K or ⌘P while one is still fading out can't leave it hidden or half-transparent.
+- Switching notes no longer leaves a strip of the previous note's text at the bottom of the window.
 
 ## [0.5.1] - 2026-11-05
 

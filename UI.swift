@@ -533,13 +533,14 @@ func lockedPlaceholder(open: @escaping () -> Void) -> NSStackView {
 // scaled or transparent. With Reduce Motion on, everything is instant.
 enum Motion {
     static var reduced: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
-    static let ease = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)
+    static let ease = CAMediaTimingFunction(controlPoints: 0.2, 0.8, 0.2, 1)  // pops/fades: quick start, soft landing
+    static let slide = CAMediaTimingFunction(name: .easeInEaseOut)  // things that move or resize: gentle both ends
 
     // Animates `changes` (animator()/implicit) over `duration`; instant with Reduce Motion.
-    static func animate(_ duration: TimeInterval, _ changes: () -> Void, done: (() -> Void)? = nil) {
+    static func animate(_ duration: TimeInterval, curve: CAMediaTimingFunction = ease, _ changes: () -> Void, done: (() -> Void)? = nil) {
         NSAnimationContext.runAnimationGroup({ c in
             c.duration = reduced ? 0 : duration
-            c.timingFunction = ease
+            c.timingFunction = curve
             c.allowsImplicitAnimation = true
             changes()
         }, completionHandler: done)

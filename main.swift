@@ -44,6 +44,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     lazy var shareButton = button("eye", "") { self.toggleSharing() }
     let toolbar = NSStackView()
     let formatBar = NSStackView()
+    lazy var formatBarHeight = formatBar.heightAnchor.constraint(equalToConstant: 0)  // active only while sliding
     let body = NSFont.systemFont(ofSize: 14)
     let d = UserDefaults.standard
     lazy var editor: Editor = {
@@ -429,7 +430,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     }
 
     func applyTheme() {
-        if panel.isVisible { Motion.crossfade(root, 0.2) }
+        if panel.isVisible {  // a quick dip and return, drawn live (snapshot transitions left stale strips of text)
+            root.alphaValue = 0.55
+            Motion.animate(0.2) { root.animator().alphaValue = 1 }
+        }
         let t = Theme.current
         panel.appearance = t.appearance.map { NSAppearance(named: $0)! }
         root.fill = t.background
@@ -520,7 +524,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         let frame = NSRect(x: 10, y: b.height - 40 - h, width: b.width - 20, height: h)
         // Glide when the results change while it's showing; snap when opening or while the window is being resized.
         if popupOpen, !popupView.isHidden, !panel.inLiveResize, popupView.frame.width == frame.width, popupView.frame != frame {
-            Motion.animate(0.12) { popupView.animator().frame = frame }
+            Motion.animate(0.14, curve: Motion.slide) { popupView.animator().frame = frame }
         } else {
             popupView.frame = frame
         }
@@ -651,7 +655,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         guard let n = Notes.load(id) else { return false }
         saver.expect(id, n.date)
         if record, let c = cur, c.id != id { back.append(c.id); fwd = [] }
-        if cur?.id != id, panel.isVisible { Motion.crossfade(root) }  // a different note fades in
+        let switching = cur?.id != id && panel.isVisible
         d.set(id, forKey: "noteID")
         cur = (id, n.date)
         name = n.name
@@ -672,6 +676,11 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         text.setSelectedRange(NSRange(location: 0, length: selectTitle ? (firstLine == NSNotFound ? (text.string as NSString).length : firstLine) : 0))
         scroll.contentView.scroll(to: .zero)  // open at the top (reopenInPlace restores the old position after)
         scroll.reflectScrolledClipView(scroll.contentView)
+        text.needsDisplay = true  // redraw everything: no strip of the previous note may survive
+        if switching {  // a different note fades in, drawn live
+            scroll.alphaValue = 0.25
+            Motion.animate(0.16) { scroll.animator().alphaValue = 1 }
+        }
         return true
     }
 
@@ -831,14 +840,38 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         shareButton.isHidden = !hidden  // visible-to-sharing is the default; only flag the exception
     }
 
+    // Slides by animating the bar's height (and opacity) frame by frame, so the bar and the note area move together;
+    // it's only hidden once fully collapsed.
+    var formatBarAnimation = 0
     func toggleFormatBar() {
-        d.set(!(d.object(forKey: "formatBar") as? Bool ?? true), forKey: "formatBar")
-        let showing = d.bool(forKey: "formatBar")
-        if showing { formatBar.alphaValue = 0 }
-        Motion.animate(0.18) {
-            applyMode()
-            root.layoutSubtreeIfNeeded()  // the note area grows/shrinks smoothly instead of jumping
+        let showing = !(d.object(forKey: "formatBar") as? Bool ?? true)
+        d.set(showing, forKey: "formatBar")
+        guard !hard else { return applyMode() }  // no bar on notes we can't edit
+        formatBarAnimation += 1
+        let run = formatBarAnimation
+        formatBar.wantsLayer = true
+        formatBar.layer?.masksToBounds = true  // contents clip while it's shorter than its buttons
+        let full = formatBar.fittingSize.height
+        if showing {
+            formatBarHeight.constant = 0
+            formatBarHeight.isActive = true
+            formatBar.alphaValue = 0
+            formatBar.isHidden = false
+            root.layoutSubtreeIfNeeded()
+        } else {
+            formatBarHeight.constant = formatBar.frame.height
+            formatBarHeight.isActive = true
+        }
+        Motion.animate(0.26, curve: Motion.slide, {
+            formatBarHeight.animator().constant = showing ? full : 0
             formatBar.animator().alphaValue = showing ? 1 : 0
+            root.layoutSubtreeIfNeeded()
+        }) { [self] in
+            guard run == formatBarAnimation else { return }  // a newer toggle took over
+            formatBarHeight.isActive = false
+            if !showing { formatBar.isHidden = true }
+            formatBar.alphaValue = 1
+            applyMode()
         }
     }
 
