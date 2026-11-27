@@ -62,7 +62,12 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     var imagesFitWidth: CGFloat = 0  // visible width the images were last fitted to
     lazy var lockedView = lockedPlaceholder { [unowned self] in reveal() }
     var browseMake: (([NoteRef]) -> [Item])?  // builds the notes list; kept to refresh it after list actions
-    var recentlyDeleted = Set<String>()  // Notes' database can list a just-deleted note until Notes writes it
+    var recentlyDeleted = Set<String>()
+    // Recently opened/saved/prefetched notes, ready to show without the ~10–15 ms AppleScript load and ~3–5 ms HTML
+    // conversion. Freshness is checked before use (database date) and after (Apple Notes itself, in the background).
+    var ready: [String: (body: NoteBody, text: NSAttributedString)] = [:]
+    var readyOrder: [String] = []
+    var prefetchWork: DispatchWorkItem?  // Notes' database can list a just-deleted note until Notes writes it
     var soft = false  // may hold checklists/tags/colors AppleScript can't round-trip: write only after ⌘E
     var lastHTML = ""
     var timer: Timer?
@@ -220,6 +225,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         }
         switcher.onClose = { [unowned self] in closeSwitcher() }
         switcher.onResize = { [unowned self] h in placePopup(height: h) }
+        switcher.onSelect = { [unowned self] item in if popupKind == "notes", !item.id.isEmpty { prefetch(item.id) } }
 
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.textColor = .secondaryLabelColor
@@ -457,7 +463,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func show() {
         if let c = cur {
-            if !panel.isVisible, Notes.modDate(c.id) != c.date { open(c.id, record: false) }  // pick up edits made elsewhere
+            if !panel.isVisible { verifyLater(c.id) }  // show at once; pick up edits made elsewhere in the background
         } else {
             openLast()
         }
@@ -652,7 +658,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     @discardableResult
     func open(_ id: String, selectTitle: Bool = false, record: Bool = true) -> Bool {
         save(wait: true)  // never load while our own write to it may still be in flight
-        guard let n = Notes.load(id) else { return false }
+        let cached = ready[id].flatMap { r in
+            Notes.dbModDate(id).map { Notes.fresh($0, r.body.date) } ?? true ? r : nil  // database says it changed → reload
+        }
+        guard let n = cached?.body ?? Notes.load(id) else { return false }
         saver.expect(id, n.date)
         if record, let c = cur, c.id != id { back.append(c.id); fwd = [] }
         let switching = cur?.id != id && panel.isVisible
@@ -664,7 +673,9 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         readOnlyWhy = n.html.range(of: "<img", options: .caseInsensitive) != nil ? "Has images"
             : n.html.range(of: "<table", options: .caseInsensitive) != nil ? "Has a table"
             : n.attachments > 0 ? "Has attachments" : ""
-        text.textStorage!.setAttributedString(n.locked ? NSAttributedString() : Notes.attributed(n.html))
+        let converted = cached?.text ?? (n.locked ? NSAttributedString() : Notes.attributed(n.html))
+        remember(id, n, converted)
+        text.textStorage!.setAttributedString(converted)
         fitImages()  // shown scaled to fit; such notes stay read-only (saving would delete their images)
         lastHTML = Notes.html(text.attributedString())  // baseline: untouched notes are never rewritten
         dirty = false
@@ -681,7 +692,54 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             scroll.alphaValue = 0.25
             Motion.animate(0.16) { scroll.animator().alphaValue = 1 }
         }
+        if cached != nil { verifyLater(id) }  // shown from memory: confirm with Apple Notes in the background
         return true
+    }
+
+    // MARK: ready notes (instant switching)
+
+    func remember(_ id: String, _ body: NoteBody, _ text: NSAttributedString) {
+        ready[id] = (body, text)
+        readyOrder.removeAll { $0 == id }
+        readyOrder.append(id)
+        while readyOrder.count > 20 { ready[readyOrder.removeFirst()] = nil }  // ponytail: 20 notes; enough for back/forward and browsing
+    }
+
+    func forget(_ id: String) {
+        ready[id] = nil
+        readyOrder.removeAll { $0 == id }
+    }
+
+    // Asks Apple Notes (off the main thread) whether the shown note changed since we loaded it; reloads if so.
+    func verifyLater(_ id: String) {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let date = Notes.eventModDate(id) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let c = cur, c.id == id, date != c.date, !dirty, inFlight == 0 else { return }
+                forget(id)
+                reopenInPlace(id)
+            }
+        }
+    }
+
+    // The highlighted note in ⌘P loads in the background, so ↵ shows it instantly.
+    func prefetch(_ id: String) {
+        prefetchWork?.cancel()
+        guard ready[id] == nil, id != cur?.id else { return }
+        let work = DispatchWorkItem { [weak self] in
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                guard let loaded = Notes.eventLoad(id) else { return }
+                DispatchQueue.main.async { [weak self] in
+                    // Attachments decide what's safe to edit; only cache when the database can count them.
+                    guard let self, ready[id] == nil, let attachments = loaded.locked ? 0 : Notes.attachmentCount(id, modified: loaded.date) else { return }
+                    let name = noteCache.first { $0.id == id }?.name ?? ""
+                    let body = NoteBody(name: name, date: loaded.date, attachments: attachments, locked: loaded.locked, html: loaded.html)
+                    remember(id, body, loaded.locked ? NSAttributedString() : Notes.attributed(loaded.html))
+                }
+            }
+        }
+        prefetchWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)  // wait for the selection to rest
     }
 
     // What this editor can't safely write back. hard: attachments/tables/images/locked (never write);
@@ -770,6 +828,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             d.removeObject(forKey: "noteID")
         }
         Notes.delete(id)
+        forget(id)
         recentlyDeleted.insert(id)
         back.removeAll { $0 == id }
         fwd.removeAll { $0 == id }
@@ -976,6 +1035,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
     func reload() {
         guard let c = cur else { return }
         save(wait: true)
+        forget(c.id)
         reopenInPlace(c.id)
         toast.show("Reloaded from Apple Notes", "arrow.clockwise")
     }
@@ -992,6 +1052,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         guard
               !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").isEmpty,  // don't relaunch Notes
               let date = Notes.modDate(c.id), date != c.date else { return }
+        forget(c.id)
         reopenInPlace(c.id)
         toast.show("Updated from Apple Notes", "arrow.triangle.2.circlepath")
     }
@@ -1012,17 +1073,18 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         inFlight -= 1
         switch r {
         case .saved(let date):
-            stored(id, date)
+            stored(id, date, html: html)
         case .conflict:
             // ponytail: edited elsewhere since we loaded; Notes wins and typing since the last save is dropped.
             guard cur?.id == id else { return toast.show("A note changed in Apple Notes before it saved — kept that version", "arrow.triangle.2.circlepath", .systemOrange) }
             cur = nil
+            forget(id)
             open(id, record: false)
             toast.show("Updated from Apple Notes", "arrow.triangle.2.circlepath")
         case .failed:  // raw events can't start Notes; AppleScript can
             if Notes.save(id, html), let date = Notes.modDate(id) {
                 saver.expect(id, date)
-                stored(id, date)
+                stored(id, date, html: html)
             } else {
                 if cur?.id == id { lastHTML = "" }  // retry on the next save
                 toast.show("Couldn't save — is Apple Notes running?", "exclamationmark.triangle.fill", .systemRed)
@@ -1030,9 +1092,13 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         }
     }
 
-    func stored(_ id: String, _ date: Date) {
+    func stored(_ id: String, _ date: Date, html: String? = nil) {
         markWritten(id, date)
         if cur?.id == id { cur = (id, date) }
+        if let html, let r = ready[id] {  // the saved version is what a later switch back should show
+            let text = id == cur?.id && !dirty ? NSAttributedString(attributedString: self.text.attributedString()) : Notes.attributed(html)
+            remember(id, NoteBody(name: r.body.name, date: date, attachments: r.body.attachments, locked: false, html: html), text)
+        } else if html == nil { forget(id) }
         if let i = noteCache.firstIndex(where: { $0.id == id }) {
             noteCache[i] = NoteRef(id: id, name: id == cur?.id ? name : noteCache[i].name, folder: noteCache[i].folder, date: date)
         }

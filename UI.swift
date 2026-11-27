@@ -280,6 +280,7 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
     var onEmpty: ((String) -> Void)?
     var onClose: () -> Void = {}
     var onResize: (CGFloat) -> Void = { _ in }
+    var onSelect: (Item) -> Void = { _ in }
     var rowMenu: ((Item) -> [NSMenuItem])?  // right-click actions for a row (notes list)
     let hints = label("", 11, .medium, .tertiaryLabelColor)
     static let defaultHints = "↑↓ Navigate    ↵ Open    esc Close"
@@ -454,6 +455,8 @@ final class Switcher: NSView, NSTableViewDataSource, NSTableViewDelegate, NSText
             onEmpty(field.stringValue)
         }
     }
+
+    func tableViewSelectionDidChange(_ n: Notification) { if let s = selected { onSelect(s) } }
 
     func numberOfRows(in t: NSTableView) -> Int { shown.count }
     func tableView(_ t: NSTableView, heightOfRow r: Int) -> CGFloat { height(shown[r]) }

@@ -314,6 +314,14 @@ enum Notes {
         return reply.paramDescriptor(forKeyword: AEKeyword(keyDirectObject)) ?? .null()
     }
 
+    // Background-safe load for prefetching (NSAppleScript is main-thread only). nil if anything fails.
+    static func eventLoad(_ id: String) -> (date: Date, locked: Bool, html: String)? {
+        guard let date = eventModDate(id), let locked = send(kAEGetData, noteProperty(id, "pwpr"))?.booleanValue else { return nil }
+        if locked { return (date, true, "") }
+        guard let html = send(kAEGetData, noteProperty(id, "body"))?.stringValue else { return nil }
+        return (date, false, html)
+    }
+
     static func eventModDate(_ id: String) -> Date? { send(kAEGetData, noteProperty(id, "asmo"))?.dateValue }
     static func eventSave(_ id: String, _ html: String) -> Bool { send(kAESetData, noteProperty(id, "body"), data: NSAppleEventDescriptor(string: html)) != nil }
 
