@@ -268,7 +268,10 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         scroll.contentView.postsBoundsChangedNotifications = true
         scroll.contentView.postsFrameChangedNotifications = true
         for name in [NSView.boundsDidChangeNotification, NSView.frameDidChangeNotification] {
-            NotificationCenter.default.addObserver(forName: name, object: scroll.contentView, queue: .main) { [unowned self] _ in fitWidth() }
+            NotificationCenter.default.addObserver(forName: name, object: scroll.contentView, queue: .main) { [unowned self] _ in
+                lastInput = Date()  // scrolling counts as activity
+                fitWidth()
+            }
         }
         text.isVerticallyResizable = true
         text.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
@@ -323,6 +326,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
         NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [unowned self] e in
             guard e.window === panel else { return e }
+            lastInput = Date()
             if e.keyCode == 53 { popupOpen ? closeSwitcher() : hide(); return nil }  // Esc
             let f = e.modifierFlags
             if readOnly, cur != nil, e.window === panel, panel.firstResponder === text, f.isDisjoint(with: [.command, .control]),
@@ -412,6 +416,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [unowned self] _ in syncFromNotes() }
         // The first HTML import loads WebKit (~230 ms); pay that now instead of on the first hotkey press.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) { _ = Notes.attributed("<div>warm-up</div>") }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.warmUp() }  // likely notes, ready before you ask
         _ = Updates.shared.controller  // starts Sparkle's scheduled checks
         settings.onTheme = { [unowned self] in applyTheme() }
         settings.onWelcome = { [unowned self] in onboarding.show() }
@@ -463,7 +468,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
 
     func show() {
         if let c = cur {
-            if !panel.isVisible { verifyLater(c.id) }  // show at once; pick up edits made elsewhere in the background
+            if !panel.isVisible { verifyLater(c.id); DispatchQueue.main.async { [weak self] in self?.warmUp() } }  // show at once; verify and warm in the background
         } else {
             openLast()
         }
@@ -596,6 +601,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         browseToken = token
         DispatchQueue.main.async { [self] in
             noteCache = Notes.list()
+            warmUp()
             if popupOpen, browseToken == token {
                 let keep = switcher.selected?.id
                 switcher.update(make(noteCache))
@@ -702,7 +708,7 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         ready[id] = (body, text)
         readyOrder.removeAll { $0 == id }
         readyOrder.append(id)
-        while readyOrder.count > 20 { ready[readyOrder.removeFirst()] = nil }  // ponytail: 20 notes; enough for back/forward and browsing
+        while readyOrder.count > 40 { ready[readyOrder.removeFirst()] = nil }  // ponytail: 40 notes (warm-up prepares 15)
     }
 
     func forget(_ id: String) {
@@ -722,24 +728,65 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
         }
     }
 
-    // The highlighted note in ⌘P loads in the background, so ↵ shows it instantly.
+    // Loads a note off the main thread (raw Apple Events) and converts it on the main thread, ready to open instantly.
+    // Needs Notes' database to count attachments (what's safe to edit), and skips notes too big to convert quickly.
+    // Doesn't start Apple Notes: if it isn't running, the load just fails.
+    func prepare(_ id: String, whenIdle: Bool = false, done: (() -> Void)? = nil) {
+        guard ready[id] == nil, id != cur?.id else { done?(); return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let loaded = Notes.eventLoad(id)
+            DispatchQueue.main.async { [weak self] in self?.convert(id, loaded, whenIdle: whenIdle, done: done) }
+        }
+    }
+
+    // Main-thread half of prepare. Warm-up (whenIdle) waits for a pause in typing/scrolling: a conversion can take a frame.
+    func convert(_ id: String, _ loaded: (date: Date, locked: Bool, html: String)?, whenIdle: Bool, done: (() -> Void)?) {
+        if whenIdle, panel.isVisible, Date().timeIntervalSince(lastInput) < 0.6 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.convert(id, loaded, whenIdle: whenIdle, done: done) }
+            return
+        }
+        defer { done?() }
+        guard let loaded, ready[id] == nil, loaded.html.utf8.count < 400_000,
+              let attachments = loaded.locked ? 0 : Notes.attachmentCount(id, modified: loaded.date) else { return }
+        let name = noteCache.first { $0.id == id }?.name ?? ""
+        let body = NoteBody(name: name, date: loaded.date, attachments: attachments, locked: loaded.locked, html: loaded.html)
+        remember(id, body, loaded.locked ? NSAttributedString() : Notes.attributed(loaded.html))
+    }
+
+    // The highlighted note in ⌘P is prepared once the selection rests, so ↵ shows it instantly.
     func prefetch(_ id: String) {
         prefetchWork?.cancel()
-        guard ready[id] == nil, id != cur?.id else { return }
-        let work = DispatchWorkItem { [weak self] in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let loaded = Notes.eventLoad(id) else { return }
-                DispatchQueue.main.async { [weak self] in
-                    // Attachments decide what's safe to edit; only cache when the database can count them.
-                    guard let self, ready[id] == nil, let attachments = loaded.locked ? 0 : Notes.attachmentCount(id, modified: loaded.date) else { return }
-                    let name = noteCache.first { $0.id == id }?.name ?? ""
-                    let body = NoteBody(name: name, date: loaded.date, attachments: attachments, locked: loaded.locked, html: loaded.html)
-                    remember(id, body, loaded.locked ? NSAttributedString() : Notes.attributed(loaded.html))
-                }
+        let work = DispatchWorkItem { [weak self] in self?.prepare(id) }
+        prefetchWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+    }
+
+    // Prepares the notes you're most likely to open (pinned, then most recently edited), one at a time with a pause,
+    // so the conversion work is spread out and never adds up to a visible hitch. Runs after launch, on showing the
+    // window and when the list refreshes; already-ready notes are skipped, so repeats are cheap.
+    var warmUpRun = 0
+    var lastInput = Date.distantPast  // typing, keys or scrolling in the window: warm-up waits for a quiet moment
+    func warmUp() {
+        guard Notes.canReadDB else { return }  // without the database, preparing can't check attachments safely
+        if noteCache.isEmpty { noteCache = Notes.list() }
+        let pinned = Set(pins).union(noteCache.filter(\.pinned).map(\.id))
+        let candidates = noteCache.filter { !$0.deleted && !$0.locked && !recentlyDeleted.contains($0.id) }
+        let order = candidates.filter { pinned.contains($0.id) } + candidates.filter { !pinned.contains($0.id) }
+        let ids = order.map(\.id).filter { ready[$0] == nil && $0 != cur?.id }.prefix(15)
+        warmUpRun += 1
+        let run = warmUpRun
+        func step(_ rest: ArraySlice<String>) {
+            guard run == warmUpRun, let id = rest.first else { return }  // a newer warm-up took over
+            // A conversion can take ~20 ms (one frame): while you're typing or scrolling, wait until you pause.
+            if panel.isVisible, Date().timeIntervalSince(lastInput) < 0.6 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { step(rest) }
+                return
+            }
+            prepare(id, whenIdle: true) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { if self != nil { step(rest.dropFirst()) } }
             }
         }
-        prefetchWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)  // wait for the selection to rest
+        step(ids)
     }
 
     // What this editor can't safely write back. hard: attachments/tables/images/locked (never write);
@@ -1049,12 +1096,19 @@ final class App: NSObject, NSApplicationDelegate, NSTextViewDelegate {
             if db == lastPolledDB { return }
             lastPolledDB = db
         }
-        guard
-              !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").isEmpty,  // don't relaunch Notes
-              let date = Notes.modDate(c.id), date != c.date else { return }
-        forget(c.id)
-        reopenInPlace(c.id)
-        toast.show("Updated from Apple Notes", "arrow.triangle.2.circlepath")
+        guard !NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.Notes").isEmpty else { return }  // don't relaunch Notes
+        // Ask Apple Notes off the main thread: it answers one request at a time, so a main-thread call could wait behind
+        // background loads (warm-up, saves) and freeze the window (measured 50 ms).
+        let id = c.id
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let date = Notes.eventModDate(id) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let c = cur, c.id == id, date != c.date, !dirty, inFlight == 0, !popupOpen else { return }
+                forget(id)
+                reopenInPlace(id)
+                toast.show("Updated from Apple Notes", "arrow.triangle.2.circlepath")
+            }
+        }
     }
 
     // Queues a background save (see Saver). `wait` blocks until it's written: before loading a note, reloading, or quitting.

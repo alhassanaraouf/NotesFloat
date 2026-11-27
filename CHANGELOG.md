@@ -17,10 +17,11 @@ the version and date, then tag.
   the format bar slides smoothly, moving the note area with it. Short (0.1–0.2 s), and instant when Reduce Motion is on.
 - The format bar hides for notes NotesFloat can't edit.
 
-- **Faster note switching:** recently opened notes, the one you just edited, and the note highlighted in ⌘P are kept
-  ready, so switching to them takes one frame (about 8–13 ms instead of 15–60 ms). Showing the window no longer
-  waits on Apple Notes either. NotesFloat still checks with Apple Notes in the background and reloads if a note
-  changed elsewhere.
+- **Instant note switching:** your pinned and most recently edited notes are prepared in the background shortly
+  after launch (pausing while you type or scroll), as are notes you open or edit and the note highlighted in ⌘P.
+  Switching to them takes 1–8 ms instead of 15–60 ms. Showing the window no longer waits on Apple Notes, and the
+  background check for changes made elsewhere no longer briefly freezes the window. NotesFloat still reloads a
+  note if it changed elsewhere.
 
 ### Fixed
 - Notes always open at the top; one could open scrolled to where the previous note was.
